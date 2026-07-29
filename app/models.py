@@ -31,6 +31,10 @@ class PlanConstraints(BaseModel):
     target_inventory_reduction_pct: float = Field(15, ge=0, le=100)
     min_fill_rate_pct: float = Field(94, ge=0, le=100)
     review_period_days: int = Field(14, ge=1)
+    emergency_stock_days: int = Field(3, ge=0, le=30)
+    max_single_part_reduction_pct: float = Field(70, ge=0, le=100)
+    excess_days_supply_threshold: int = Field(120, ge=30, le=720)
+    high_velocity_demand_threshold: float = Field(12, ge=1, le=100)
 
 
 class PlanRequest(BaseModel):
@@ -47,6 +51,7 @@ class PartRecommendation(BaseModel):
     stockout_risk: float
     recommended_action: ActionType
     recommended_order_qty: float
+    confidence_score: float
     rationale: str
     inventory_value_impact: float
 

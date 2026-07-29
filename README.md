@@ -67,6 +67,13 @@ Each part record should contain:
 - `lead_time_days` (number)
 - `returnable` (boolean)
 
+Planner constraints now support advanced tuning fields in addition to the core controls:
+
+- `emergency_stock_days` (integer, default `3`)
+- `max_single_part_reduction_pct` (number, default `70`)
+- `excess_days_supply_threshold` (integer, default `120`)
+- `high_velocity_demand_threshold` (number, default `12`)
+
 ## CSV Workflow
 
 1. Open the app and click `Download CSV Template`.

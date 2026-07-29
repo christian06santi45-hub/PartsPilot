@@ -4,11 +4,12 @@ import csv
 import io
 from typing import Any
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from app.engine import build_plan
 from app.models import PartRecord, PlanConstraints, PlanRequest, PlanResponse
@@ -36,6 +37,11 @@ CSV_COLUMNS = [
     "lead_time_days",
     "returnable",
 ]
+
+
+class ImportCsvRequest(BaseModel):
+    csv_text: str | None = None
+    csv_texts: list[str] | None = None
 
 
 def _coerce_bool(value: str) -> bool:
@@ -71,6 +77,27 @@ def _csv_row_to_part(row: dict[str, str], row_number: int) -> PartRecord:
             status_code=400,
             detail=f"Invalid value at CSV row {row_number}: {exc}",
         ) from exc
+
+
+def _parse_parts_csv(content: str) -> list[PartRecord]:
+    reader = csv.DictReader(io.StringIO(content))
+    if reader.fieldnames is None:
+        raise HTTPException(status_code=400, detail="CSV appears to be empty.")
+
+    missing_columns = [col for col in CSV_COLUMNS if col not in reader.fieldnames]
+    if missing_columns:
+        raise HTTPException(
+            status_code=400,
+            detail=f"CSV missing columns: {', '.join(missing_columns)}",
+        )
+
+    parts: list[PartRecord] = []
+    for index, row in enumerate(reader, start=2):
+        if not any((value or "").strip() for value in row.values()):
+            continue
+        parts.append(_csv_row_to_part(row, row_number=index))
+
+    return parts
 
 
 @app.get("/")
@@ -173,26 +200,20 @@ def csv_template() -> StreamingResponse:
 
 
 @app.post("/api/parts/import-csv")
-async def import_parts_csv(file: UploadFile = File(...)) -> dict[str, Any]:
-    raw_bytes = await file.read()
-    try:
-        content = raw_bytes.decode("utf-8-sig")
-    except UnicodeDecodeError as exc:
-        raise HTTPException(status_code=400, detail="CSV must be UTF-8 encoded.") from exc
+def import_parts_csv(payload: ImportCsvRequest) -> dict[str, Any]:
+    sources = payload.csv_texts or []
+    if payload.csv_text is not None:
+        sources = [payload.csv_text] + sources
 
-    reader = csv.DictReader(io.StringIO(content))
-    if reader.fieldnames is None:
-        raise HTTPException(status_code=400, detail="CSV appears to be empty.")
+    if not sources:
+        raise HTTPException(status_code=400, detail="No CSV content provided.")
 
-    missing_columns = [col for col in CSV_COLUMNS if col not in reader.fieldnames]
-    if missing_columns:
-        raise HTTPException(
-            status_code=400,
-            detail=f"CSV missing columns: {', '.join(missing_columns)}",
-        )
+    all_parts: list[PartRecord] = []
+    for content in sources:
+        cleaned_content = content.lstrip("\ufeff")
+        all_parts.extend(_parse_parts_csv(cleaned_content))
 
-    parts = [_csv_row_to_part(row, row_number=i + 2) for i, row in enumerate(reader)]
-    return {"parts": [part.model_dump() for part in parts]}
+    return {"parts": [part.model_dump() for part in all_parts]}
 
 
 @app.post("/api/plan", response_model=PlanResponse)
@@ -225,6 +246,7 @@ def export_plan_csv(payload: PlanRequest) -> StreamingResponse:
             "part_number",
             "description",
             "recommended_action",
+            "confidence_score",
             "obsolescence_risk",
             "stockout_risk",
             "current_turns",
@@ -241,6 +263,7 @@ def export_plan_csv(payload: PlanRequest) -> StreamingResponse:
                 rec.part_number,
                 rec.description,
                 rec.recommended_action,
+                rec.confidence_score,
                 rec.obsolescence_risk,
                 rec.stockout_risk,
                 rec.current_turns,

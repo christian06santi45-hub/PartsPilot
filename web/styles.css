@@ -6,6 +6,7 @@
   --accent: #0f6b53;
   --accent-2: #d94f04;
   --line: #ddd3c6;
+  --focus: #0b5945;
 }
 
 * {
@@ -31,6 +32,7 @@ body {
   color: #fff;
   padding: 1.25rem;
   border-radius: 14px;
+  box-shadow: 0 10px 24px rgba(15, 107, 83, 0.18);
 }
 
 .hero h1 {
@@ -48,6 +50,7 @@ body {
   border: 1px solid var(--line);
   border-radius: 14px;
   padding: 1rem;
+  box-shadow: 0 6px 20px rgba(29, 26, 22, 0.05);
 }
 
 .controls-top {
@@ -63,6 +66,24 @@ body {
   align-items: end;
   gap: 0.65rem;
   margin-bottom: 0.9rem;
+}
+
+.preset-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.65rem;
+  margin-bottom: 0.9rem;
+}
+
+select {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.55rem;
+  font: inherit;
+  color: var(--ink);
+  background: #fff;
 }
 
 .file-label {
@@ -82,6 +103,10 @@ button.primary {
   background: var(--accent);
   color: #fff;
   border-color: #0b5945;
+}
+
+button:hover {
+  transform: translateY(-1px);
 }
 
 .grid {
@@ -107,6 +132,32 @@ textarea {
   font: inherit;
   color: var(--ink);
   background: #fff;
+}
+
+input:focus,
+select:focus,
+textarea:focus,
+button:focus {
+  outline: 2px solid color-mix(in srgb, var(--focus) 60%, white);
+  outline-offset: 1px;
+}
+
+.advanced-panel {
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  padding: 0.6rem 0.8rem;
+  margin-bottom: 0.9rem;
+  background: #f8f1e4;
+}
+
+.advanced-panel summary {
+  cursor: pointer;
+  font-weight: 700;
+  color: #2d2a25;
+}
+
+.advanced-grid {
+  margin-top: 0.8rem;
 }
 
 textarea {
@@ -144,6 +195,38 @@ textarea {
   overflow-x: auto;
 }
 
+.result-status {
+  margin-bottom: 0.7rem;
+  padding: 0.5rem 0.65rem;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  color: #2d2a25;
+  background: #f7efe0;
+  border: 1px solid var(--line);
+}
+
+.action-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-bottom: 0.8rem;
+}
+
+.filter-chip {
+  border: 1px solid #ccbfae;
+  background: #f4ebda;
+  border-radius: 999px;
+  padding: 0.3rem 0.65rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.filter-chip.active {
+  background: #2e5649;
+  color: #fff;
+  border-color: #24463c;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
@@ -162,6 +245,16 @@ th {
   font-size: 0.8rem;
   text-transform: uppercase;
   color: var(--muted);
+}
+
+th[data-sort-key] {
+  cursor: pointer;
+}
+
+th[data-sort-key]::after {
+  content: " \2195";
+  color: #9f9588;
+  font-size: 0.75rem;
 }
 
 .badge {

@@ -26,10 +26,22 @@
 
         <div class="import-row">
           <label class="file-label">
-            Import CSV
-            <input id="csv-file" type="file" accept=".csv,text/csv" />
+            Import CSV Files
+            <input id="csv-file" type="file" accept=".csv,text/csv" multiple />
           </label>
           <button id="import-csv">Import CSV</button>
+        </div>
+
+        <div class="preset-row">
+          <label>
+            Scenario Preset
+            <select id="scenario-preset">
+              <option value="balanced">Balanced</option>
+              <option value="service_first">Service First</option>
+              <option value="aggressive_reduction">Aggressive Reduction</option>
+            </select>
+          </label>
+          <button id="apply-preset">Apply Preset</button>
         </div>
 
         <div class="grid">
@@ -47,6 +59,28 @@
           </label>
         </div>
 
+        <details class="advanced-panel">
+          <summary>Advanced Planning Rules</summary>
+          <div class="grid advanced-grid">
+            <label>
+              Emergency Stock Days
+              <input id="emergency-stock-days" type="number" value="3" min="0" max="30" />
+            </label>
+            <label>
+              Max Single-Part Reduction (%)
+              <input id="max-part-reduction" type="number" value="70" min="0" max="100" />
+            </label>
+            <label>
+              Excess Days Supply Threshold
+              <input id="excess-days-threshold" type="number" value="120" min="30" max="720" />
+            </label>
+            <label>
+              High Velocity Demand Threshold
+              <input id="high-velocity-threshold" type="number" value="12" min="1" max="100" step="0.1" />
+            </label>
+          </div>
+        </details>
+
         <label>
           Parts JSON
           <textarea id="parts-json" rows="14"></textarea>
@@ -60,18 +94,21 @@
 
       <section class="panel">
         <h2>Recommendations</h2>
+        <div id="result-status" class="result-status">Run a plan to view recommendations.</div>
+        <div id="action-filter" class="action-filter"></div>
         <div class="table-wrap">
           <table>
             <thead>
               <tr>
-                <th>Part</th>
-                <th>Action</th>
-                <th>Obsolete Risk</th>
-                <th>Stockout Risk</th>
-                <th>Current Turns</th>
-                <th>Projected Turns</th>
-                <th>Order Qty</th>
-                <th>Value Impact</th>
+                <th data-sort-key="part_number">Part</th>
+                <th data-sort-key="recommended_action">Action</th>
+                <th data-sort-key="confidence_score">Confidence</th>
+                <th data-sort-key="obsolescence_risk">Obsolete Risk</th>
+                <th data-sort-key="stockout_risk">Stockout Risk</th>
+                <th data-sort-key="current_turns">Current Turns</th>
+                <th data-sort-key="projected_turns">Projected Turns</th>
+                <th data-sort-key="recommended_order_qty">Order Qty</th>
+                <th data-sort-key="inventory_value_impact">Value Impact</th>
                 <th>Rationale</th>
               </tr>
             </thead>
