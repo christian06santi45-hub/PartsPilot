@@ -64,9 +64,12 @@ def calc_stockout_risk(part: PartRecord, constraints: PlanConstraints) -> float:
     pressure = safe_div(lead_plus_review - days_supply, max(lead_plus_review, 1.0))
     baseline = clamp(pressure, 0.0, 1.0)
 
+    service_buffer = 1.0 + max(0.0, (constraints.min_fill_rate_pct - 94.0) / 100.0) * 0.4
+    adjusted = clamp(baseline * service_buffer, 0.0, 1.0)
+
     if part.monthly_demand_avg <= 0.2:
-        return baseline * 0.25
-    return baseline
+        return adjusted * 0.25
+    return adjusted
 
 
 def recommend_for_part(part: PartRecord, constraints: PlanConstraints) -> PartMetrics:
@@ -80,9 +83,11 @@ def recommend_for_part(part: PartRecord, constraints: PlanConstraints) -> PartMe
     value_impact = 0.0
     projected_on_hand = part.on_hand
 
+    reduction_pressure = clamp(constraints.target_inventory_reduction_pct / 100.0, 0.0, 1.0)
+
     if ob_risk >= 0.75 and so_risk <= 0.2:
         action = "return_to_vendor" if part.returnable else "liquidate"
-        reduction_units = part.on_hand * 0.65
+        reduction_units = part.on_hand * (0.65 + reduction_pressure * 0.2)
         value_impact = reduction_units * part.unit_cost
         projected_on_hand = max(part.on_hand - reduction_units, 0.0)
         rationale = (
@@ -90,7 +95,7 @@ def recommend_for_part(part: PartRecord, constraints: PlanConstraints) -> PartMe
         )
     elif ob_risk >= 0.6 and so_risk <= 0.3:
         action = "stop_ordering"
-        reduction_units = part.on_hand * 0.35
+        reduction_units = part.on_hand * (0.35 + reduction_pressure * 0.15)
         value_impact = reduction_units * part.unit_cost
         projected_on_hand = max(part.on_hand - reduction_units, 0.0)
         rationale = "Aging inventory with weak demand; stop replenishment and run down stock."
@@ -99,12 +104,13 @@ def recommend_for_part(part: PartRecord, constraints: PlanConstraints) -> PartMe
         target_days = part.lead_time_days + constraints.review_period_days + 7
         daily_demand = part.monthly_demand_avg / 30.0
         target_stock = target_days * daily_demand
-        order_qty = max(target_stock - (part.on_hand + part.on_order), 0.0)
+        service_buffer = 1.0 + max(0.0, (constraints.min_fill_rate_pct - 94.0) / 100.0) * 1.2
+        order_qty = max(target_stock * service_buffer - (part.on_hand + part.on_order), 0.0)
         projected_on_hand = part.on_hand + order_qty
         rationale = "High stockout risk; buy enough to protect fill-rate through lead time."
     elif ob_risk >= 0.5 and part.returnable:
         action = "transfer"
-        reduction_units = part.on_hand * 0.25
+        reduction_units = part.on_hand * (0.25 + reduction_pressure * 0.1)
         value_impact = reduction_units * part.unit_cost
         projected_on_hand = max(part.on_hand - reduction_units, 0.0)
         rationale = "Moderate obsolescence risk; transfer excess to higher-demand locations."
