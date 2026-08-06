@@ -66,6 +66,36 @@ const CSV_COLUMNS = [
   "returnable",
 ];
 
+const CSV_COLUMN_ALIASES = {
+  part_number: ["part_number", "part-no", "part no", "partno"],
+  description: ["description", "current-rpt", "desc"],
+  on_hand: ["on_hand", "qoh", "tqty", "tot-stk-qty"],
+  on_order: ["on_order", "po-qpr-dr"],
+  monthly_demand_avg: ["monthly_demand_avg", "avg-sls"],
+  last_sale_days: ["last_sale_days", "age-dr"],
+  unit_cost: ["unit_cost", "base-cost"],
+  lead_time_days: ["lead_time_days", "lead_time", "lead-time-days"],
+  returnable: ["returnable"],
+};
+
+function normalizeHeader(name) {
+  return String(name || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function getByAliases(row, aliases) {
+  for (const alias of aliases) {
+    const key = normalizeHeader(alias);
+    if (Object.hasOwn(row, key) && String(row[key]).trim() !== "") {
+      return String(row[key]).trim();
+    }
+  }
+  return null;
+}
+
 function currency(value) {
   return new Intl.NumberFormat("en-US", {
     style: "currency",
@@ -160,25 +190,71 @@ function parsePartsCsv(csvText) {
   }
 
   const header = rows[0].map((value) => value.trim());
-  const missingColumns = CSV_COLUMNS.filter((column) => !header.includes(column));
+  const normalizedHeader = header.map((value) => normalizeHeader(value));
+
+  const requiredSourceAliases = {
+    part_number: ["part_number", "part-no"],
+    on_hand: ["on_hand", "qoh", "tqty", "tot-stk-qty"],
+    monthly_demand_avg: ["monthly_demand_avg", "avg-sls", "hist-sum"],
+    last_sale_days: ["last_sale_days", "age-dr"],
+    unit_cost: ["unit_cost", "base-cost"],
+  };
+
+  const missingColumns = Object.entries(requiredSourceAliases)
+    .filter(([, aliases]) => aliases.every((alias) => !normalizedHeader.includes(normalizeHeader(alias))))
+    .map(([name]) => name);
+
   if (missingColumns.length > 0) {
-    throw new Error(`CSV missing columns: ${missingColumns.join(", ")}`);
+    throw new Error(
+      `CSV missing required data for: ${missingColumns.join(", ")}. Supported report headers include PART-NO, CURRENT-RPT, QOH, PO-QPR-DR, AVG-SLS, BASE-COST, AGE-DR.`
+    );
   }
 
   return rows.slice(1).map((values, index) => {
     const rowNumber = index + 2;
-    const row = Object.fromEntries(header.map((column, columnIndex) => [column, values[columnIndex] || ""]));
+    const row = Object.fromEntries(
+      normalizedHeader.map((column, columnIndex) => [column, (values[columnIndex] || "").trim()])
+    );
+
+    const partNumber = getByAliases(row, CSV_COLUMN_ALIASES.part_number);
+    const description = getByAliases(row, CSV_COLUMN_ALIASES.description) || "";
+    const onHand = getByAliases(row, CSV_COLUMN_ALIASES.on_hand);
+    const onOrder = getByAliases(row, CSV_COLUMN_ALIASES.on_order) || "0";
+
+    let monthlyDemand = getByAliases(row, CSV_COLUMN_ALIASES.monthly_demand_avg);
+    if (monthlyDemand === null) {
+      const histSum = getByAliases(row, ["hist-sum"]);
+      if (histSum !== null) {
+        monthlyDemand = String(Number(histSum) / 12);
+      }
+    }
+
+    let lastSaleDays = getByAliases(row, ["last_sale_days"]);
+    if (lastSaleDays === null) {
+      const ageMonths = getByAliases(row, ["age-dr"]);
+      if (ageMonths !== null) {
+        lastSaleDays = String(Number(ageMonths) * 30);
+      }
+    }
+
+    const unitCost = getByAliases(row, CSV_COLUMN_ALIASES.unit_cost);
+    const leadTime = getByAliases(row, CSV_COLUMN_ALIASES.lead_time_days) || "7";
+    const returnable = getByAliases(row, CSV_COLUMN_ALIASES.returnable) || "true";
+
+    if (partNumber === null || onHand === null || monthlyDemand === null || lastSaleDays === null || unitCost === null) {
+      throw new Error(`Missing required values at CSV row ${rowNumber}.`);
+    }
 
     return {
-      part_number: row.part_number,
-      description: row.description,
-      on_hand: parseRequiredNumber(row.on_hand, "on_hand", rowNumber),
-      on_order: row.on_order === "" ? 0 : parseRequiredNumber(row.on_order, "on_order", rowNumber),
-      monthly_demand_avg: parseRequiredNumber(row.monthly_demand_avg, "monthly_demand_avg", rowNumber),
-      last_sale_days: parseRequiredNumber(row.last_sale_days, "last_sale_days", rowNumber),
-      unit_cost: parseRequiredNumber(row.unit_cost, "unit_cost", rowNumber),
-      lead_time_days: parseRequiredNumber(row.lead_time_days, "lead_time_days", rowNumber),
-      returnable: coerceCsvBoolean(row.returnable || "true", rowNumber),
+      part_number: partNumber,
+      description,
+      on_hand: parseRequiredNumber(onHand, "on_hand", rowNumber),
+      on_order: parseRequiredNumber(onOrder, "on_order", rowNumber),
+      monthly_demand_avg: parseRequiredNumber(monthlyDemand, "monthly_demand_avg", rowNumber),
+      last_sale_days: parseRequiredNumber(lastSaleDays, "last_sale_days", rowNumber),
+      unit_cost: parseRequiredNumber(unitCost, "unit_cost", rowNumber),
+      lead_time_days: parseRequiredNumber(leadTime, "lead_time_days", rowNumber),
+      returnable: coerceCsvBoolean(returnable, rowNumber),
     };
   });
 }
@@ -292,6 +368,255 @@ function setStatus(message) {
   resultStatusEl.textContent = message;
 }
 
+function numberOrDefault(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function safeDiv(num, den) {
+  if (den <= 0) {
+    return 0;
+  }
+  return num / den;
+}
+
+function calcTurns(onHand, monthlyDemandAvg) {
+  const annualDemand = monthlyDemandAvg * 12;
+  const avgInventory = Math.max(onHand / 2, 1);
+  return safeDiv(annualDemand, avgInventory);
+}
+
+function calcDaysSupply(onHand, monthlyDemandAvg) {
+  return safeDiv(onHand, Math.max(monthlyDemandAvg / 30, 0.001));
+}
+
+function calcObsolescenceRisk(part) {
+  const staleComponent = clamp(part.last_sale_days / 365, 0, 1.5);
+  const lowDemandComponent = clamp(1 - safeDiv(part.monthly_demand_avg, 6), 0, 1);
+  const stockExcessComponent = clamp(
+    safeDiv(part.on_hand, Math.max(part.monthly_demand_avg, 0.25)) / 12,
+    0,
+    1.5
+  );
+
+  const risk = staleComponent * 0.45 + lowDemandComponent * 0.25 + stockExcessComponent * 0.3;
+  return clamp(risk, 0, 1);
+}
+
+function calcStockoutRisk(part, constraints) {
+  const daysSupply = calcDaysSupply(part.on_hand, part.monthly_demand_avg);
+  const leadPlusReview = part.lead_time_days + constraints.review_period_days;
+
+  const pressure = safeDiv(leadPlusReview - daysSupply, Math.max(leadPlusReview, 1));
+  const baseline = clamp(pressure, 0, 1);
+
+  const serviceBuffer = 1 + Math.max(0, (constraints.min_fill_rate_pct - 94) / 100) * 0.4;
+  const adjusted = clamp(baseline * serviceBuffer, 0, 1);
+
+  if (part.monthly_demand_avg <= 0.2) {
+    return adjusted * 0.25;
+  }
+  return adjusted;
+}
+
+function calcConfidenceScore(action, obRisk, soRisk, daysSupply, constraints) {
+  const separation = Math.abs(obRisk - soRisk);
+  let raw = 0.45;
+
+  if (action === "buy") {
+    raw = 0.42 + soRisk * 0.45 + (1 - obRisk) * 0.13;
+  } else if (action === "liquidate" || action === "return_to_vendor") {
+    raw = 0.46 + obRisk * 0.39 + (1 - soRisk) * 0.15;
+  } else if (action === "stop_ordering" || action === "transfer") {
+    raw = 0.44 + obRisk * 0.31 + (1 - soRisk) * 0.12;
+  } else {
+    raw = 0.45 + (1 - separation) * 0.2;
+  }
+
+  if (["stop_ordering", "transfer", "liquidate", "return_to_vendor"].includes(action)) {
+    const threshold = Math.max(constraints.excess_days_supply_threshold, 1);
+    raw += clamp((daysSupply - threshold) / threshold, 0, 0.12);
+  }
+
+  if (action === "hold" && soRisk >= 0.4) {
+    raw += 0.08;
+  }
+
+  return clamp(raw, 0.05, 0.99);
+}
+
+function recommendForPartLocal(part, constraints) {
+  const currentTurns = calcTurns(part.on_hand, part.monthly_demand_avg);
+  const obRisk = calcObsolescenceRisk(part);
+  const soRisk = calcStockoutRisk(part, constraints);
+
+  let action = "hold";
+  let orderQty = 0;
+  let rationale = "Balanced profile; maintain current policy.";
+  let valueImpact = 0;
+  let projectedOnHand = part.on_hand;
+
+  const reductionPressure = clamp(constraints.target_inventory_reduction_pct / 100, 0, 1);
+  const maxReductionPct = clamp(constraints.max_single_part_reduction_pct / 100, 0, 1);
+  const daysSupply = calcDaysSupply(part.on_hand, part.monthly_demand_avg);
+  const highVelocity = part.monthly_demand_avg >= constraints.high_velocity_demand_threshold;
+  const freshSales = part.last_sale_days <= 14;
+  const emergencyFloor = Math.max(0, constraints.emergency_stock_days);
+  const excessDays = daysSupply >= constraints.excess_days_supply_threshold;
+
+  const applyReduction = (rawUnits) => {
+    const cappedUnits = Math.min(rawUnits, part.on_hand * maxReductionPct);
+    return clamp(cappedUnits, 0, part.on_hand);
+  };
+
+  if (highVelocity && freshSales && soRisk >= 0.35) {
+    action = "buy";
+    const coverageDays = part.lead_time_days + constraints.review_period_days + emergencyFloor;
+    const dailyDemand = part.monthly_demand_avg / 30;
+    const serviceBias = Math.max(0, (constraints.min_fill_rate_pct - 94) / 100);
+    const targetStock = coverageDays * dailyDemand * (1 + serviceBias);
+    orderQty = Math.max(targetStock - (part.on_hand + part.on_order), 0);
+    projectedOnHand = part.on_hand + orderQty;
+    rationale = "Fast-moving part with recent demand and service pressure; protect availability.";
+  } else if (obRisk >= 0.75 && soRisk <= 0.2) {
+    action = part.returnable ? "return_to_vendor" : "liquidate";
+    const reductionUnits = applyReduction(part.on_hand * (0.65 + reductionPressure * 0.2));
+    valueImpact = reductionUnits * part.unit_cost;
+    projectedOnHand = Math.max(part.on_hand - reductionUnits, 0);
+    rationale = "High obsolescence risk with low service risk; remove majority of exposure now.";
+  } else if (obRisk >= 0.6 && soRisk <= 0.3) {
+    action = "stop_ordering";
+    const reductionUnits = applyReduction(part.on_hand * (0.35 + reductionPressure * 0.15));
+    valueImpact = reductionUnits * part.unit_cost;
+    projectedOnHand = Math.max(part.on_hand - reductionUnits, 0);
+    rationale = "Aging inventory with weak demand; stop replenishment and run down stock.";
+  } else if (excessDays && part.monthly_demand_avg <= 3 && soRisk <= 0.45) {
+    action = "stop_ordering";
+    const reductionUnits = applyReduction(part.on_hand * (0.2 + reductionPressure * 0.2));
+    valueImpact = reductionUnits * part.unit_cost;
+    projectedOnHand = Math.max(part.on_hand - reductionUnits, 0);
+    rationale = "Excess days of supply exceeds policy threshold; reduce depth gradually.";
+  } else if (soRisk >= 0.65 && obRisk <= 0.55) {
+    action = "buy";
+    const targetDays = part.lead_time_days + constraints.review_period_days + emergencyFloor;
+    const dailyDemand = part.monthly_demand_avg / 30;
+    const targetStock = targetDays * dailyDemand;
+    const serviceBuffer = 1 + Math.max(0, (constraints.min_fill_rate_pct - 94) / 100) * 1.2;
+    orderQty = Math.max(targetStock * serviceBuffer - (part.on_hand + part.on_order), 0);
+    projectedOnHand = part.on_hand + orderQty;
+    rationale = "High stockout risk; buy enough to protect fill-rate through lead time.";
+  } else if (obRisk >= 0.5 && part.returnable) {
+    action = "transfer";
+    const reductionUnits = applyReduction(part.on_hand * (0.25 + reductionPressure * 0.1));
+    valueImpact = reductionUnits * part.unit_cost;
+    projectedOnHand = Math.max(part.on_hand - reductionUnits, 0);
+    rationale = "Moderate obsolescence risk; transfer excess to higher-demand locations.";
+  }
+
+  if (["liquidate", "return_to_vendor", "transfer", "stop_ordering"].includes(action) && soRisk >= 0.4) {
+    action = "hold";
+    projectedOnHand = part.on_hand;
+    valueImpact = 0;
+    rationale = "Inventory risk is elevated but service risk is material; avoid depletion action.";
+  }
+
+  const projectedTurns = calcTurns(projectedOnHand, part.monthly_demand_avg);
+  const confidence = calcConfidenceScore(action, obRisk, soRisk, daysSupply, constraints);
+
+  return {
+    part_number: part.part_number,
+    description: part.description,
+    current_turns: Number(currentTurns.toFixed(2)),
+    projected_turns: Number(projectedTurns.toFixed(2)),
+    obsolescence_risk: Number(obRisk.toFixed(2)),
+    stockout_risk: Number(soRisk.toFixed(2)),
+    recommended_action: action,
+    recommended_order_qty: Number(orderQty.toFixed(1)),
+    confidence_score: Number(confidence.toFixed(2)),
+    rationale,
+    inventory_value_impact: Number(valueImpact.toFixed(2)),
+  };
+}
+
+function normalizePartForLocalEngine(part) {
+  return {
+    part_number: String(part.part_number || "").trim(),
+    description: String(part.description || ""),
+    on_hand: Math.max(0, numberOrDefault(part.on_hand, 0)),
+    on_order: Math.max(0, numberOrDefault(part.on_order, 0)),
+    monthly_demand_avg: Math.max(0, numberOrDefault(part.monthly_demand_avg, 0)),
+    last_sale_days: Math.max(0, Math.round(numberOrDefault(part.last_sale_days, 0))),
+    unit_cost: Math.max(0, numberOrDefault(part.unit_cost, 0)),
+    lead_time_days: Math.max(0, Math.round(numberOrDefault(part.lead_time_days, 7))),
+    returnable: typeof part.returnable === "boolean" ? part.returnable : String(part.returnable).toLowerCase() !== "false",
+  };
+}
+
+function buildPlanLocal(parts, constraints) {
+  const normalizedParts = parts.map(normalizePartForLocalEngine).filter((part) => part.part_number !== "");
+  const recommendations = normalizedParts.map((part) => recommendForPartLocal(part, constraints));
+
+  let currentValue = 0;
+  let projectedValue = 0;
+  let currentTurnNumerator = 0;
+  let projectedTurnNumerator = 0;
+  let totalWeight = 0;
+  let obsoleteCount = 0;
+  let buyCount = 0;
+
+  normalizedParts.forEach((part, index) => {
+    const rec = recommendations[index];
+    const partValue = part.on_hand * part.unit_cost;
+    const projectedOnHandValue = partValue - rec.inventory_value_impact + rec.recommended_order_qty * part.unit_cost;
+    const weight = Math.max(partValue, 1);
+
+    currentTurnNumerator += rec.current_turns * weight;
+    projectedTurnNumerator += rec.projected_turns * weight;
+    totalWeight += weight;
+
+    currentValue += partValue;
+    projectedValue += Math.max(projectedOnHandValue, 0);
+
+    if (rec.obsolescence_risk >= 0.6) {
+      obsoleteCount += 1;
+    }
+    if (rec.recommended_action === "buy") {
+      buyCount += 1;
+    }
+  });
+
+  let inventoryReductionPct = 0;
+  if (currentValue > 0) {
+    inventoryReductionPct = ((currentValue - projectedValue) / currentValue) * 100;
+  }
+
+  recommendations.sort((a, b) => {
+    const actionRankA = a.recommended_action === "liquidate" ? 0 : 1;
+    const actionRankB = b.recommended_action === "liquidate" ? 0 : 1;
+    if (actionRankA !== actionRankB) {
+      return actionRankA - actionRankB;
+    }
+    return b.obsolescence_risk - a.obsolescence_risk;
+  });
+
+  return {
+    summary: {
+      current_inventory_value: Number(currentValue.toFixed(2)),
+      projected_inventory_value: Number(projectedValue.toFixed(2)),
+      inventory_reduction_pct: Number(inventoryReductionPct.toFixed(2)),
+      current_weighted_turns: Number(safeDiv(currentTurnNumerator, totalWeight).toFixed(2)),
+      projected_weighted_turns: Number(safeDiv(projectedTurnNumerator, totalWeight).toFixed(2)),
+      parts_flagged_obsolete: obsoleteCount,
+      parts_buy_recommended: buyCount,
+    },
+    recommendations,
+  };
+}
+
 function applyPresetValues(presetKey) {
   const preset = SCENARIO_PRESETS[presetKey];
   if (!preset) {
@@ -338,39 +663,102 @@ async function runPlan() {
 
   const payload = buildPayloadFromScreen(parts);
 
-  const response = await fetch("/api/plan", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
+  try {
+    const response = await fetch("/api/plan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
 
-  if (!response.ok) {
-    alert("Failed to run plan.");
-    setStatus("Plan failed. Check inputs and try again.");
-    return;
+    if (!response.ok) {
+      const responseText = await response.text();
+      let message = `Failed to run plan (HTTP ${response.status}).`;
+
+      if (responseText) {
+        try {
+          const parsed = JSON.parse(responseText);
+          if (Array.isArray(parsed.detail) && parsed.detail.length > 0) {
+            const first = parsed.detail[0];
+            const fieldPath = Array.isArray(first.loc) ? first.loc.slice(1).join(".") : "request";
+            message = `${fieldPath}: ${first.msg}`;
+          } else if (typeof parsed.detail === "string") {
+            message = parsed.detail;
+          }
+        } catch {
+          message = `${message} ${responseText.slice(0, 160)}`;
+        }
+      }
+
+      if (response.status === 405) {
+        const localData = buildPlanLocal(payload.parts, payload.constraints);
+        recommendationState = localData.recommendations || [];
+        activeActionFilter = "all";
+        renderKpis(localData.summary);
+        renderActionFilter(recommendationState);
+        applyRecommendationView();
+        setStatus("Plan complete with local fallback engine (API POST /api/plan returned 405).");
+        return;
+      }
+
+      alert(message);
+      setStatus(`Plan failed: ${message}`);
+      return;
+    }
+
+    const data = await response.json();
+    recommendationState = data.recommendations || [];
+    activeActionFilter = "all";
+    renderKpis(data.summary);
+    renderActionFilter(recommendationState);
+    applyRecommendationView();
+    setStatus(`Plan complete: ${recommendationState.length} recommendations.`);
+  } catch (error) {
+    try {
+      const localData = buildPlanLocal(payload.parts, payload.constraints);
+      recommendationState = localData.recommendations || [];
+      activeActionFilter = "all";
+      renderKpis(localData.summary);
+      renderActionFilter(recommendationState);
+      applyRecommendationView();
+      setStatus("Plan complete with local fallback engine (API unavailable).");
+    } catch {
+      const message = error instanceof Error ? error.message : "Planner API unreachable.";
+      alert(`Failed to run plan: ${message}`);
+      setStatus(`Plan failed: ${message}`);
+    }
   }
-
-  const data = await response.json();
-  recommendationState = data.recommendations || [];
-  activeActionFilter = "all";
-  renderKpis(data.summary);
-  renderActionFilter(recommendationState);
-  applyRecommendationView();
-  setStatus(`Plan complete: ${recommendationState.length} recommendations.`);
 }
 
 function buildPayloadFromScreen(existingParts) {
   const parts = existingParts || JSON.parse(partsJsonEl.value);
+
+  const targetReduction = clamp(numberOrDefault(targetReductionEl.value, 15), 0, 100);
+  const minFillRate = clamp(numberOrDefault(minFillRateEl.value, 94), 0, 100);
+  const reviewPeriodDays = Math.max(1, Math.round(numberOrDefault(reviewDaysEl.value, 14)));
+  const emergencyStockDays = clamp(Math.round(numberOrDefault(emergencyStockDaysEl.value, 3)), 0, 30);
+  const maxPartReduction = clamp(numberOrDefault(maxPartReductionEl.value, 70), 0, 100);
+  const excessDaysThreshold = clamp(Math.round(numberOrDefault(excessDaysThresholdEl.value, 120)), 30, 720);
+  const highVelocityThreshold = clamp(numberOrDefault(highVelocityThresholdEl.value, 12), 1, 100);
+
+  // Mirror normalized values back into the UI so users can see what was sent.
+  targetReductionEl.value = String(targetReduction);
+  minFillRateEl.value = String(minFillRate);
+  reviewDaysEl.value = String(reviewPeriodDays);
+  emergencyStockDaysEl.value = String(emergencyStockDays);
+  maxPartReductionEl.value = String(maxPartReduction);
+  excessDaysThresholdEl.value = String(excessDaysThreshold);
+  highVelocityThresholdEl.value = String(highVelocityThreshold);
+
   return {
     parts,
     constraints: {
-      target_inventory_reduction_pct: Number(targetReductionEl.value),
-      min_fill_rate_pct: Number(minFillRateEl.value),
-      review_period_days: Number(reviewDaysEl.value),
-      emergency_stock_days: Number(emergencyStockDaysEl.value),
-      max_single_part_reduction_pct: Number(maxPartReductionEl.value),
-      excess_days_supply_threshold: Number(excessDaysThresholdEl.value),
-      high_velocity_demand_threshold: Number(highVelocityThresholdEl.value),
+      target_inventory_reduction_pct: targetReduction,
+      min_fill_rate_pct: minFillRate,
+      review_period_days: reviewPeriodDays,
+      emergency_stock_days: emergencyStockDays,
+      max_single_part_reduction_pct: maxPartReduction,
+      excess_days_supply_threshold: excessDaysThreshold,
+      high_velocity_demand_threshold: highVelocityThreshold,
     },
   };
 }
@@ -406,22 +794,47 @@ async function importCsv() {
 
   try {
     const csvTexts = await Promise.all(files.map((file) => file.text()));
-    const importPayload = { csv_texts: csvTexts };
-    const response = await fetch("/api/parts/import-csv", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(importPayload),
-    });
+    let parts = [];
+    let usedClientFallback = false;
 
-    if (!response.ok) {
-      const errorBody = await response.json().catch(() => ({}));
-      throw new Error(errorBody.detail || "Failed to import CSV files.");
+    try {
+      const response = await fetch("/api/parts/import-csv", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ csv_texts: csvTexts }),
+      });
+
+      if (!response.ok) {
+        const responseText = await response.text();
+        let message = "Failed to import CSV files.";
+
+        if (responseText) {
+          try {
+            const parsed = JSON.parse(responseText);
+            message = parsed.detail || message;
+          } catch {
+            message = `CSV import API failed (${response.status}).`;
+          }
+        }
+
+        throw new Error(message);
+      }
+
+      const data = await response.json();
+      parts = data.parts || [];
+    } catch (apiError) {
+      // Keep import available even when backend import endpoint fails.
+      parts = csvTexts.flatMap((csvText) => parsePartsCsv(csvText));
+      usedClientFallback = true;
+      console.warn("Falling back to client-side CSV parsing:", apiError);
     }
 
-    const data = await response.json();
-    const parts = data.parts || [];
     partsJsonEl.value = JSON.stringify(parts, null, 2);
-    setStatus(`Imported ${parts.length} parts from ${files.length} CSV file${files.length === 1 ? "" : "s"}.`);
+    setStatus(
+      usedClientFallback
+        ? `Imported ${parts.length} parts from ${files.length} CSV file${files.length === 1 ? "" : "s"} (client fallback).`
+        : `Imported ${parts.length} parts from ${files.length} CSV file${files.length === 1 ? "" : "s"}.`
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to import CSV.";
     alert(message);

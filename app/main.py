@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+import re
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
@@ -38,6 +39,35 @@ CSV_COLUMNS = [
     "returnable",
 ]
 
+CSV_COLUMN_ALIASES: dict[str, list[str]] = {
+    "part_number": ["part_number", "part-no", "part no", "partno"],
+    "description": ["description", "current-rpt", "desc"],
+    "on_hand": ["on_hand", "qoh", "tqty", "tot-stk-qty"],
+    "on_order": ["on_order", "po-qpr-dr"],
+    "monthly_demand_avg": ["monthly_demand_avg", "avg-sls"],
+    "last_sale_days": ["last_sale_days", "age-dr"],
+    "unit_cost": ["unit_cost", "base-cost"],
+    "lead_time_days": ["lead_time_days", "lead_time", "lead-time-days"],
+    "returnable": ["returnable"],
+}
+
+
+def _normalize_header(name: str) -> str:
+    lowered = (name or "").strip().lower()
+    return re.sub(r"[^a-z0-9]+", "_", lowered).strip("_")
+
+
+def _alias_to_normalized(alias: str) -> str:
+    return _normalize_header(alias)
+
+
+def _get_from_aliases(normalized_row: dict[str, str], aliases: list[str]) -> str | None:
+    for alias in aliases:
+        key = _alias_to_normalized(alias)
+        if key in normalized_row and normalized_row[key].strip() != "":
+            return normalized_row[key].strip()
+    return None
+
 
 class ImportCsvRequest(BaseModel):
     csv_text: str | None = None
@@ -55,16 +85,53 @@ def _coerce_bool(value: str) -> bool:
 
 def _csv_row_to_part(row: dict[str, str], row_number: int) -> PartRecord:
     try:
+        normalized_row = {
+            _normalize_header(key): (value or "").strip()
+            for key, value in row.items()
+            if key is not None
+        }
+
+        monthly_demand = _get_from_aliases(normalized_row, CSV_COLUMN_ALIASES["monthly_demand_avg"])
+        if monthly_demand is None:
+            hist_sum = _get_from_aliases(normalized_row, ["hist-sum"])
+            if hist_sum is not None:
+                monthly_demand = str(float(hist_sum) / 12)
+
+        last_sale_days = _get_from_aliases(normalized_row, ["last_sale_days"])
+        if last_sale_days is None:
+            age_dr_months = _get_from_aliases(normalized_row, ["age-dr"])
+            if age_dr_months is not None:
+                last_sale_days = str(float(age_dr_months) * 30)
+
+        part_number = _get_from_aliases(normalized_row, CSV_COLUMN_ALIASES["part_number"])
+        if part_number is None:
+            raise KeyError("part_number")
+        on_hand = _get_from_aliases(normalized_row, CSV_COLUMN_ALIASES["on_hand"])
+        if on_hand is None:
+            raise KeyError("on_hand")
+        if monthly_demand is None:
+            raise KeyError("monthly_demand_avg")
+        if last_sale_days is None:
+            raise KeyError("last_sale_days")
+        unit_cost = _get_from_aliases(normalized_row, CSV_COLUMN_ALIASES["unit_cost"])
+        if unit_cost is None:
+            raise KeyError("unit_cost")
+
+        description = _get_from_aliases(normalized_row, CSV_COLUMN_ALIASES["description"]) or ""
+        on_order = _get_from_aliases(normalized_row, CSV_COLUMN_ALIASES["on_order"]) or "0"
+        lead_time_days = _get_from_aliases(normalized_row, CSV_COLUMN_ALIASES["lead_time_days"]) or "7"
+        returnable_raw = _get_from_aliases(normalized_row, CSV_COLUMN_ALIASES["returnable"]) or "true"
+
         payload: dict[str, Any] = {
-            "part_number": row["part_number"],
-            "description": row.get("description", ""),
-            "on_hand": float(row["on_hand"]),
-            "on_order": float(row.get("on_order", "0") or 0),
-            "monthly_demand_avg": float(row["monthly_demand_avg"]),
-            "last_sale_days": int(float(row["last_sale_days"])),
-            "unit_cost": float(row["unit_cost"]),
-            "lead_time_days": int(float(row["lead_time_days"])),
-            "returnable": _coerce_bool(row.get("returnable", "true")),
+            "part_number": part_number,
+            "description": description,
+            "on_hand": float(on_hand),
+            "on_order": float(on_order),
+            "monthly_demand_avg": float(monthly_demand),
+            "last_sale_days": int(float(last_sale_days)),
+            "unit_cost": float(unit_cost),
+            "lead_time_days": int(float(lead_time_days)),
+            "returnable": _coerce_bool(returnable_raw),
         }
         return PartRecord(**payload)
     except KeyError as exc:
@@ -84,11 +151,30 @@ def _parse_parts_csv(content: str) -> list[PartRecord]:
     if reader.fieldnames is None:
         raise HTTPException(status_code=400, detail="CSV appears to be empty.")
 
-    missing_columns = [col for col in CSV_COLUMNS if col not in reader.fieldnames]
+    normalized_fieldnames = {_normalize_header(name) for name in reader.fieldnames if name is not None}
+
+    required_sources = {
+        "part_number": ["part_number", "part-no"],
+        "on_hand": ["on_hand", "qoh", "tqty", "tot-stk-qty"],
+        "monthly_demand_avg": ["monthly_demand_avg", "avg-sls", "hist-sum"],
+        "last_sale_days": ["last_sale_days", "age-dr"],
+        "unit_cost": ["unit_cost", "base-cost"],
+    }
+
+    missing_columns: list[str] = []
+    for internal_name, aliases in required_sources.items():
+        alias_keys = {_alias_to_normalized(alias) for alias in aliases}
+        if normalized_fieldnames.isdisjoint(alias_keys):
+            missing_columns.append(internal_name)
+
     if missing_columns:
         raise HTTPException(
             status_code=400,
-            detail=f"CSV missing columns: {', '.join(missing_columns)}",
+            detail=(
+                "CSV missing required data for: "
+                f"{', '.join(missing_columns)}. "
+                "Supported report headers include PART-NO, CURRENT-RPT, QOH, PO-QPR-DR, AVG-SLS, BASE-COST, AGE-DR."
+            ),
         )
 
     parts: list[PartRecord] = []
