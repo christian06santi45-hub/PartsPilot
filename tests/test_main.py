@@ -1,3 +1,4 @@
+import datetime
 import unittest
 
 from fastapi.testclient import TestClient
@@ -68,6 +69,76 @@ class CsvImportTests(unittest.TestCase):
         self.assertEqual(body["parts"][0]["last_sale_days"], 60)
         self.assertEqual(body["parts"][0]["lead_time_days"], 7)
         self.assertEqual(body["parts"][0]["returnable"], True)
+
+    def test_import_csv_defaults_missing_age_dr(self) -> None:
+        csv_text = (
+            "PART-NO,CURRENT-RPT,QOH,PO-QPR-DR,AVG-SLS,BASE-COST,AGE-DR\n"
+            "ALT-002,Alternator Plus,8,2,1.5,120.0,\n"
+        )
+
+        response = self.client.post("/api/parts/import-csv", json={"csv_text": csv_text})
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(len(body["parts"]), 1)
+        self.assertEqual(body["parts"][0]["part_number"], "ALT-002")
+        self.assertEqual(body["parts"][0]["last_sale_days"], 365)
+
+    def test_import_csv_supports_hist_and_last_sale_date_variants(self) -> None:
+        csv_text = (
+            "PART-NO,CURRENT-RPT,QOH,PO-QPR-DR,HIST-SUM,BASE-COST,LAST SALE DATE\n"
+            "ALT-004,Alternator Plus,8,2,24,120.0,2023-10-01\n"
+        )
+
+        response = self.client.post("/api/parts/import-csv", json={"csv_text": csv_text})
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(len(body["parts"]), 1)
+        self.assertEqual(body["parts"][0]["monthly_demand_avg"], 2.0)
+        self.assertEqual(
+            body["parts"][0]["last_sale_days"],
+            (datetime.date.today() - datetime.date(2023, 10, 1)).days,
+        )
+
+    def test_import_csv_supports_hist_monthly_series(self) -> None:
+        csv_text = (
+            "PART-NO,CURRENT-RPT,QOH,PO-QPR-DR,HIST-1,HIST-2,HIST-3,BASE-COST,LAST-SALE-DAYS\n"
+            "ALT-005,Alternator Plus,8,2,12,18,30,120.0,14\n"
+        )
+
+        response = self.client.post("/api/parts/import-csv", json={"csv_text": csv_text})
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(len(body["parts"]), 1)
+        self.assertEqual(body["parts"][0]["monthly_demand_avg"], 20.0)
+        self.assertEqual(body["parts"][0]["last_sale_days"], 14)
+
+    def test_import_csv_accepts_demand_alias_variants(self) -> None:
+        csv_text = (
+            "PART-NO,CURRENT-RPT,QOH,PO-QPR-DR,AVG-SLS-12M,BASE-COST,LAST SALE DATE\n"
+            "ALT-006,Alternator Plus,8,2,24,120.0,2024-01-01\n"
+        )
+
+        response = self.client.post("/api/parts/import-csv", json={"csv_text": csv_text})
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["parts"][0]["monthly_demand_avg"], 24.0)
+
+    def test_import_csv_clamps_negative_on_hand_to_zero(self) -> None:
+        csv_text = (
+            "PART-NO,CURRENT-RPT,QOH,PO-QPR-DR,AVG-SLS,BASE-COST,AGE-DR\n"
+            "ALT-003,Alternator Minus,-585,0,1.5,120.0,30\n"
+        )
+
+        response = self.client.post("/api/parts/import-csv", json={"csv_text": csv_text})
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(len(body["parts"]), 1)
+        self.assertEqual(body["parts"][0]["on_hand"], 0.0)
 
 
 if __name__ == "__main__":

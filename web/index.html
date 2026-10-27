@@ -7,117 +7,144 @@
     <link rel="stylesheet" href="/web/styles.css" />
   </head>
   <body>
-    <main class="layout">
-      <section class="hero">
-        <h1>PartsPilot</h1>
-        <p>
-          AI planning for dealership parts: reduce obsolescence, control inventory,
-          protect fill-rate.
-        </p>
-      </section>
-
-      <section class="panel controls">
-        <div class="controls-top">
+    <div class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Dealership parts intelligence</p>
+          <h1>PartsPilot</h1>
+        </div>
+        <div class="topbar-actions">
           <button id="load-demo">Load Demo Data</button>
           <button id="run-plan" class="primary">Run Plan</button>
-          <button id="download-template">Download CSV Template</button>
-          <button id="export-plan">Export Plan CSV</button>
         </div>
+      </header>
 
-        <div class="import-row">
-          <label class="file-label">
-            Import CSV Files
-            <input id="csv-file" type="file" accept=".csv,text/csv" multiple />
-          </label>
-          <button id="import-csv">Import CSV</button>
-        </div>
+      <main class="layout">
+        <aside class="panel sidebar">
+          <div class="section-header">
+            <span class="dot"></span>
+            <h2>Planning Controls</h2>
+          </div>
 
-        <div class="preset-row">
-          <label>
-            Scenario Preset
-            <select id="scenario-preset">
-              <option value="balanced">Balanced</option>
-              <option value="service_first">Service First</option>
-              <option value="aggressive_reduction">Aggressive Reduction</option>
-            </select>
-          </label>
-          <button id="apply-preset">Apply Preset</button>
-        </div>
+          <div class="controls-top">
+            <button id="download-template" class="ghost">Download CSV Template</button>
+            <button id="export-plan" class="ghost">Export Plan CSV</button>
+          </div>
 
-        <div class="grid">
-          <label>
-            Target Inventory Reduction (%)
-            <input id="target-reduction" type="number" value="15" min="0" max="100" />
-          </label>
-          <label>
-            Minimum Fill Rate (%)
-            <input id="min-fill-rate" type="number" value="94" min="0" max="100" />
-          </label>
-          <label>
-            Review Period (Days)
-            <input id="review-days" type="number" value="14" min="1" />
-          </label>
-        </div>
+          <div class="import-row">
+            <label class="file-label">
+              Import CSV Files
+              <input id="csv-file" type="file" accept=".csv,text/csv" multiple />
+            </label>
+            <button id="import-csv" class="primary">Import CSV</button>
+          </div>
 
-        <details class="advanced-panel">
-          <summary>Advanced Planning Rules</summary>
-          <div class="grid advanced-grid">
+          <div class="preset-row">
             <label>
-              Emergency Stock Days
-              <input id="emergency-stock-days" type="number" value="3" min="0" max="30" />
+              Scenario Preset
+              <select id="scenario-preset">
+                <option value="balanced">Balanced</option>
+                <option value="service_first">Service First</option>
+                <option value="aggressive_reduction">Aggressive Reduction</option>
+              </select>
+            </label>
+            <button id="apply-preset">Apply Preset</button>
+          </div>
+
+          <div class="grid">
+            <label>
+              Target Reduction (%)
+              <input id="target-reduction" type="number" value="15" min="0" max="100" />
             </label>
             <label>
-              Max Single-Part Reduction (%)
-              <input id="max-part-reduction" type="number" value="70" min="0" max="100" />
+              Min Fill Rate (%)
+              <input id="min-fill-rate" type="number" value="94" min="0" max="100" />
             </label>
             <label>
-              Excess Days Supply Threshold
-              <input id="excess-days-threshold" type="number" value="120" min="30" max="720" />
-            </label>
-            <label>
-              High Velocity Demand Threshold
-              <input id="high-velocity-threshold" type="number" value="12" min="1" max="100" step="0.1" />
+              Review Period (Days)
+              <input id="review-days" type="number" value="14" min="1" />
             </label>
           </div>
-        </details>
 
-        <label>
-          Parts JSON
-          <textarea id="parts-json" rows="14"></textarea>
-        </label>
-      </section>
+          <details class="advanced-panel">
+            <summary>Advanced Planning Rules</summary>
+            <div class="grid advanced-grid">
+              <label>
+                Emergency Stock Days
+                <input id="emergency-stock-days" type="number" value="3" min="0" max="30" />
+              </label>
+              <label>
+                Max Single-Part Reduction (%)
+                <input id="max-part-reduction" type="number" value="70" min="0" max="100" />
+              </label>
+              <label>
+                Excess Days Supply Threshold
+                <input id="excess-days-threshold" type="number" value="120" min="30" max="720" />
+              </label>
+              <label>
+                High Velocity Demand Threshold
+                <input id="high-velocity-threshold" type="number" value="12" min="1" max="100" step="0.1" />
+              </label>
+            </div>
+          </details>
 
-      <section class="panel kpis">
-        <h2>Plan KPIs</h2>
-        <div id="kpi-grid" class="kpi-grid"></div>
-      </section>
+          <label>
+            Parts JSON
+            <textarea id="parts-json" rows="14"></textarea>
+          </label>
+        </aside>
 
-      <section class="panel">
-        <h2>Recommendations</h2>
-        <div id="result-status" class="result-status">Run a plan to view recommendations.</div>
-        <div id="action-filter" class="action-filter"></div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th data-sort-key="part_number">Part</th>
-                <th data-sort-key="recommended_action">Action</th>
-                <th data-sort-key="confidence_score">Confidence</th>
-                <th data-sort-key="obsolescence_risk">Obsolete Risk</th>
-                <th data-sort-key="stockout_risk">Stockout Risk</th>
-                <th data-sort-key="current_turns">Current Turns</th>
-                <th data-sort-key="projected_turns">Projected Turns</th>
-                <th data-sort-key="recommended_order_qty">Order Qty</th>
-                <th data-sort-key="inventory_value_impact">Value Impact</th>
-                <th>Rationale</th>
-              </tr>
-            </thead>
-            <tbody id="recommendation-body"></tbody>
-          </table>
-        </div>
-      </section>
-    </main>
+        <section class="main-column">
+          <section class="panel hero">
+            <div>
+              <p class="eyebrow light">Current plan snapshot</p>
+              <h2>Inventory optimization overview</h2>
+            </div>
+            <p>
+              AI planning for dealership parts: reduce obsolescence, control inventory,
+              protect fill-rate.
+            </p>
+          </section>
 
-    <script src="/web/app.js?v=20260806d" defer></script>
+          <section class="panel kpis">
+            <div class="section-header compact">
+              <span class="dot dot-green"></span>
+              <h2>Plan KPIs</h2>
+            </div>
+            <div id="kpi-grid" class="kpi-grid"></div>
+          </section>
+
+          <section class="panel recommendations-panel">
+            <div class="section-header compact">
+              <span class="dot dot-orange"></span>
+              <h2>Recommendations</h2>
+            </div>
+            <div id="result-status" class="result-status">Run a plan to view recommendations.</div>
+            <div id="action-filter" class="action-filter"></div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th data-sort-key="part_number">Part</th>
+                    <th data-sort-key="recommended_action">Action</th>
+                    <th data-sort-key="confidence_score">Confidence</th>
+                    <th data-sort-key="obsolescence_risk">Obsolete Risk</th>
+                    <th data-sort-key="stockout_risk">Stockout Risk</th>
+                    <th data-sort-key="current_turns">Current Turns</th>
+                    <th data-sort-key="projected_turns">Projected Turns</th>
+                    <th data-sort-key="recommended_order_qty">Order Qty</th>
+                    <th data-sort-key="inventory_value_impact">Value Impact</th>
+                    <th>Rationale</th>
+                  </tr>
+                </thead>
+                <tbody id="recommendation-body"></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <script src="/web/app.js?v=20261027-1" defer></script>
   </body>
   </html>

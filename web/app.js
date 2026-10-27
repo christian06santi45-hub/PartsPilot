@@ -67,15 +67,66 @@ const CSV_COLUMNS = [
 ];
 
 const CSV_COLUMN_ALIASES = {
-  part_number: ["part_number", "part-no", "part no", "partno"],
-  description: ["description", "current-rpt", "desc"],
-  on_hand: ["on_hand", "qoh", "tqty", "tot-stk-qty"],
-  on_order: ["on_order", "po-qpr-dr"],
-  monthly_demand_avg: ["monthly_demand_avg", "avg-sls"],
-  last_sale_days: ["last_sale_days", "age-dr"],
-  unit_cost: ["unit_cost", "base-cost"],
+  part_number: ["part_number", "part-no", "part no", "partno", "part_no"],
+  description: ["description", "current-rpt", "current_rpt", "desc"],
+  on_hand: ["on_hand", "qoh", "tqty", "tot-stk-qty", "qty_on_hand", "qty-on-hand"],
+  on_order: ["on_order", "po-qpr-dr", "po_qpr_dr"],
+  monthly_demand_avg: [
+    "monthly_demand_avg",
+    "monthly-demand-avg",
+    "monthly demand avg",
+    "monthly_demand",
+    "monthly-demand",
+    "avg-sls",
+    "avg_sls",
+    "avg-sls-12m",
+    "avg_sls_12m",
+    "avg-sls-12mo",
+    "avg_sls_12mo",
+    "avg-sls-12month",
+    "avg_sls_12month",
+    "avg-sls-annual",
+    "avg_sls_annual",
+    "avg_sls_annualized",
+    "hist",
+    "hist-sum",
+    "hist_sum",
+    "hist-total",
+    "hist_total",
+    "hist-year",
+    "hist_year",
+    "avg_12m",
+    "avg_12_month",
+    "demand",
+  ],
+  last_sale_days: [
+    "last_sale_days",
+    "last-sale-days",
+    "last sale days",
+    "last sale day",
+    "last-sale",
+    "last-sale-date",
+    "last_sale_date",
+    "last sale date",
+    "last-sale-dt",
+    "last_sale_dt",
+    "last-sales-date",
+    "last_sls_date",
+    "last-sls-date",
+    "last_sls_days",
+    "days-since-last-sale",
+    "days_since_last_sale",
+    "days-since-last-sold",
+    "days_since_last_sold",
+    "days_since_last_sale_days",
+    "age-dr",
+    "age_dr",
+    "age",
+    "last_sale",
+  ],
+  unit_cost: ["unit_cost", "unit-cost", "base-cost", "base_cost"],
   lead_time_days: ["lead_time_days", "lead_time", "lead-time-days"],
-  returnable: ["returnable"],
+  returnable: ["returnable", "returnable_flag"],
 };
 
 function normalizeHeader(name) {
@@ -86,14 +137,144 @@ function normalizeHeader(name) {
     .replace(/^_+|_+$/g, "");
 }
 
+function isHistTotalKey(key) {
+  const normalized = normalizeHeader(key);
+  return normalized === "hist" || /(?:^|[_-])(sum|total|annual|year|yr)(?:$|[_-])/.test(normalized);
+}
+
+function parseDateToDays(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return null;
+  }
+
+  const asNumber = Number(text);
+  if (Number.isFinite(asNumber) && asNumber > 100000) {
+    return Math.max(0, Math.round((Date.now() - new Date(1899, 11, 30).getTime()) / 86400000 - asNumber));
+  }
+
+  const parsed = new Date(text);
+  if (!Number.isNaN(parsed.getTime())) {
+    return Math.max(0, Math.round((Date.now() - parsed.getTime()) / 86400000));
+  }
+
+  return null;
+}
+
+function coerceLastSaleDays(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "365";
+  }
+
+  const numeric = Number(text);
+  if (Number.isFinite(numeric)) {
+    return String(Math.max(0, Math.round(numeric)));
+  }
+
+  const fromDate = parseDateToDays(text);
+  return fromDate !== null ? String(fromDate) : "365";
+}
+
+function resolveLastSaleDays(row) {
+  const directAliases = [
+    "last_sale_days",
+    "last-sale-days",
+    "last sale days",
+    "last-sale",
+    "last-sale-date",
+    "last_sale_date",
+    "last sale date",
+    "last-sale-dt",
+    "last_sale_dt",
+    "last-sales-date",
+    "last_sls_date",
+    "days-since-last-sale",
+    "days_since_last_sale",
+  ];
+  const directValue = getByAliases(row, directAliases);
+  if (directValue !== null) {
+    return coerceLastSaleDays(directValue);
+  }
+
+  for (const ageKey of ["age-dr", "age_dr", "age"]) {
+    const ageMonths = getByAliases(row, [ageKey]);
+    if (ageMonths !== null) {
+      return String(Math.max(0, Math.round(Number(ageMonths) * 30)));
+    }
+  }
+
+  return null;
+}
+
+function headerMatchesAlias(headerName, alias) {
+  const normalizedName = normalizeHeader(headerName);
+  const normalizedAlias = normalizeHeader(alias);
+
+  if (normalizedName === normalizedAlias) {
+    return true;
+  }
+
+  const nameParts = new Set(normalizedName.split("_").filter(Boolean));
+  const aliasParts = new Set(normalizedAlias.split("_").filter(Boolean));
+  if ([...aliasParts].every((part) => nameParts.has(part))) {
+    return true;
+  }
+
+  if (normalizedAlias.includes(normalizedName) || normalizedName.includes(normalizedAlias)) {
+    return true;
+  }
+
+  return normalizedAlias.startsWith("hist") && normalizedName.startsWith("hist");
+}
+
 function getByAliases(row, aliases) {
   for (const alias of aliases) {
-    const key = normalizeHeader(alias);
-    if (Object.hasOwn(row, key) && String(row[key]).trim() !== "") {
-      return String(row[key]).trim();
+    for (const [key, value] of Object.entries(row)) {
+      if (!headerMatchesAlias(key, alias)) {
+        continue;
+      }
+      const normalizedKey = normalizeHeader(key);
+      if (normalizedKey.startsWith("hist") && normalizedKey !== "hist" && normalizedKey !== "hist_sum" && normalizedKey !== "hist_total" && normalizedKey !== "hist_year") {
+        continue;
+      }
+      const rawValue = String(value || "").trim();
+      if (!rawValue) {
+        continue;
+      }
+      if (normalizedKey.startsWith("hist") && isHistTotalKey(key)) {
+        return String(Number(rawValue) / 12);
+      }
+      return rawValue;
     }
   }
   return null;
+}
+
+function isHistFieldName(name) {
+  return /^hist(?:[0-9]+|(?:[-_][a-z0-9]+)*)$/.test(normalizeHeader(name));
+}
+
+function getMonthlyDemandFromHist(row) {
+  const histEntries = Object.entries(row)
+    .filter(([key]) => isHistFieldName(key))
+    .map(([key, value]) => ({ key, value: Number(String(value).trim()) }))
+    .filter(({ value }) => Number.isFinite(value));
+
+  if (histEntries.length === 0) {
+    return null;
+  }
+
+  if (histEntries.length === 1) {
+    const entry = histEntries[0];
+    if (/(sum|total|annual|year)/.test(entry.key)) {
+      return String(entry.value / 12);
+    }
+    return String(entry.value);
+  }
+
+  const total = histEntries.reduce((sum, entry) => sum + entry.value, 0);
+  return String(total / histEntries.length);
 }
 
 function currency(value) {
@@ -180,7 +361,7 @@ function parseRequiredNumber(value, fieldName, rowNumber) {
   if (Number.isNaN(parsed)) {
     throw new Error(`Invalid numeric value for ${fieldName} at CSV row ${rowNumber}.`);
   }
-  return parsed;
+  return Math.max(0, parsed);
 }
 
 function parsePartsCsv(csvText) {
@@ -191,17 +372,74 @@ function parsePartsCsv(csvText) {
 
   const header = rows[0].map((value) => value.trim());
   const normalizedHeader = header.map((value) => normalizeHeader(value));
+  const histColumnsPresent = normalizedHeader.some((value) => /^hist(?:[0-9]+|(?:[-_][a-z0-9]+)*)$/.test(value));
 
   const requiredSourceAliases = {
-    part_number: ["part_number", "part-no"],
-    on_hand: ["on_hand", "qoh", "tqty", "tot-stk-qty"],
-    monthly_demand_avg: ["monthly_demand_avg", "avg-sls", "hist-sum"],
-    last_sale_days: ["last_sale_days", "age-dr"],
-    unit_cost: ["unit_cost", "base-cost"],
+    part_number: ["part_number", "part-no", "part_no"],
+    on_hand: ["on_hand", "qoh", "tqty", "tot-stk-qty", "qty_on_hand", "qty-on-hand"],
+    monthly_demand_avg: [
+      "monthly_demand_avg",
+      "monthly-demand-avg",
+      "monthly demand avg",
+      "avg-sls",
+      "avg_sls",
+      "avg-sls-12m",
+      "avg_sls_12m",
+      "avg-sls-12mo",
+      "avg_sls_12mo",
+      "avg-sls-12month",
+      "avg_sls_12month",
+      "avg-sls-annual",
+      "avg_sls_annual",
+      "avg_sls_annualized",
+      "hist",
+      "hist-sum",
+      "hist_sum",
+      "hist-total",
+      "hist_total",
+      "hist-year",
+      "hist_year",
+      "avg_12m",
+      "avg_12_month",
+      "demand",
+    ],
+    last_sale_days: [
+      "last_sale_days",
+      "last-sale-days",
+      "last sale days",
+      "last-sale",
+      "last-sale-date",
+      "last_sale_date",
+      "last sale date",
+      "last-sale-dt",
+      "last_sale_dt",
+      "last-sales-date",
+      "last_sls_date",
+      "last-sls-date",
+      "last_sls_days",
+      "days-since-last-sale",
+      "days_since_last_sale",
+      "days-since-last-sold",
+      "days_since_last_sold",
+      "days_since_last_sale_days",
+      "age-dr",
+      "age_dr",
+      "age",
+      "last_sale",
+    ],
+    unit_cost: ["unit_cost", "unit-cost", "base-cost", "base_cost"],
   };
 
   const missingColumns = Object.entries(requiredSourceAliases)
-    .filter(([, aliases]) => aliases.every((alias) => !normalizedHeader.includes(normalizeHeader(alias))))
+    .filter(([name, aliases]) => {
+      const aliasMatch = aliases.some((alias) =>
+        normalizedHeader.some((header) => headerMatchesAlias(header, alias))
+      );
+      if (name === "monthly_demand_avg") {
+        return !aliasMatch && !histColumnsPresent;
+      }
+      return !aliasMatch;
+    })
     .map(([name]) => name);
 
   if (missingColumns.length > 0) {
@@ -223,26 +461,36 @@ function parsePartsCsv(csvText) {
 
     let monthlyDemand = getByAliases(row, CSV_COLUMN_ALIASES.monthly_demand_avg);
     if (monthlyDemand === null) {
-      const histSum = getByAliases(row, ["hist-sum"]);
-      if (histSum !== null) {
-        monthlyDemand = String(Number(histSum) / 12);
-      }
+      monthlyDemand = getMonthlyDemandFromHist(row);
     }
 
-    let lastSaleDays = getByAliases(row, ["last_sale_days"]);
+    let lastSaleDays = resolveLastSaleDays(row);
+
+    // Some dealership exports leave age blank; default to one year stale instead of failing import.
     if (lastSaleDays === null) {
-      const ageMonths = getByAliases(row, ["age-dr"]);
-      if (ageMonths !== null) {
-        lastSaleDays = String(Number(ageMonths) * 30);
-      }
+      lastSaleDays = "365";
     }
 
     const unitCost = getByAliases(row, CSV_COLUMN_ALIASES.unit_cost);
     const leadTime = getByAliases(row, CSV_COLUMN_ALIASES.lead_time_days) || "7";
     const returnable = getByAliases(row, CSV_COLUMN_ALIASES.returnable) || "true";
 
-    if (partNumber === null || onHand === null || monthlyDemand === null || lastSaleDays === null || unitCost === null) {
-      throw new Error(`Missing required values at CSV row ${rowNumber}.`);
+    const missingFields = [];
+    if (partNumber === null) {
+      missingFields.push("part_number");
+    }
+    if (onHand === null) {
+      missingFields.push("on_hand");
+    }
+    if (monthlyDemand === null) {
+      missingFields.push("monthly_demand_avg");
+    }
+    if (unitCost === null) {
+      missingFields.push("unit_cost");
+    }
+
+    if (missingFields.length > 0) {
+      throw new Error(`Missing required values (${missingFields.join(", ")}) at CSV row ${rowNumber}.`);
     }
 
     return {
@@ -807,23 +1055,49 @@ async function importCsv() {
       if (!response.ok) {
         const responseText = await response.text();
         let message = "Failed to import CSV files.";
+        let hasDetailedApiValidationMessage = false;
 
         if (responseText) {
           try {
             const parsed = JSON.parse(responseText);
-            message = parsed.detail || message;
+
+            if (typeof parsed.detail === "string" && parsed.detail.trim() !== "") {
+              message = parsed.detail;
+              hasDetailedApiValidationMessage = true;
+            } else if (Array.isArray(parsed.detail) && parsed.detail.length > 0) {
+              const firstDetail = parsed.detail[0];
+              if (typeof firstDetail === "string" && firstDetail.trim() !== "") {
+                message = firstDetail;
+                hasDetailedApiValidationMessage = true;
+              } else if (
+                firstDetail &&
+                typeof firstDetail === "object" &&
+                typeof firstDetail.msg === "string" &&
+                firstDetail.msg.trim() !== ""
+              ) {
+                message = firstDetail.msg;
+                hasDetailedApiValidationMessage = true;
+              }
+            }
           } catch {
             message = `CSV import API failed (${response.status}).`;
           }
         }
 
-        throw new Error(message);
+        const error = new Error(message);
+        const isClientStatus = response.status >= 400 && response.status < 500;
+        error.noClientFallback = isClientStatus && hasDetailedApiValidationMessage;
+        throw error;
       }
 
       const data = await response.json();
       parts = data.parts || [];
     } catch (apiError) {
-      // Keep import available even when backend import endpoint fails.
+      if (apiError instanceof Error && apiError.noClientFallback) {
+        throw apiError;
+      }
+
+      // Keep import available when backend import endpoint is unavailable.
       parts = csvTexts.flatMap((csvText) => parsePartsCsv(csvText));
       usedClientFallback = true;
       console.warn("Falling back to client-side CSV parsing:", apiError);

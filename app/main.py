@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import datetime
 import io
 import re
 from typing import Any
@@ -25,6 +26,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def disable_browser_cache(request, call_next):
+    response = await call_next(request)
+    if request.url.path == "/" or request.url.path.startswith("/web/"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
+
+
 app.mount("/web", StaticFiles(directory="web"), name="web")
 
 CSV_COLUMNS = [
@@ -40,15 +52,66 @@ CSV_COLUMNS = [
 ]
 
 CSV_COLUMN_ALIASES: dict[str, list[str]] = {
-    "part_number": ["part_number", "part-no", "part no", "partno"],
-    "description": ["description", "current-rpt", "desc"],
-    "on_hand": ["on_hand", "qoh", "tqty", "tot-stk-qty"],
-    "on_order": ["on_order", "po-qpr-dr"],
-    "monthly_demand_avg": ["monthly_demand_avg", "avg-sls"],
-    "last_sale_days": ["last_sale_days", "age-dr"],
-    "unit_cost": ["unit_cost", "base-cost"],
-    "lead_time_days": ["lead_time_days", "lead_time", "lead-time-days"],
-    "returnable": ["returnable"],
+    "part_number": ["part_number", "part-no", "part no", "partno", "part_no"],
+    "description": ["description", "current-rpt", "current_rpt", "desc"],
+    "on_hand": ["on_hand", "qoh", "tqty", "tot-stk-qty", "qty_on_hand", "qty-on-hand"],
+    "on_order": ["on_order", "po-qpr-dr", "po_qpr_dr"],
+    "monthly_demand_avg": [
+        "monthly_demand_avg",
+        "monthly-demand-avg",
+        "monthly demand avg",
+        "monthly_demand",
+        "monthly-demand",
+        "avg-sls",
+        "avg_sls",
+        "avg-sls-12m",
+        "avg_sls_12m",
+        "avg-sls-12mo",
+        "avg_sls_12mo",
+        "avg-sls-12month",
+        "avg_sls_12month",
+        "avg-sls-annual",
+        "avg_sls_annual",
+        "avg_sls_annualized",
+        "hist",
+        "hist-sum",
+        "hist_sum",
+        "hist-total",
+        "hist_total",
+        "hist-year",
+        "hist_year",
+        "avg_12m",
+        "avg_12_month",
+        "demand",
+    ],
+    "last_sale_days": [
+        "last_sale_days",
+        "last-sale-days",
+        "last sale days",
+        "last sale day",
+        "last-sale",
+        "last-sale-date",
+        "last_sale_date",
+        "last sale date",
+        "last-sale-dt",
+        "last_sale_dt",
+        "last-sales-date",
+        "last_sls_date",
+        "last-sls-date",
+        "last_sls_days",
+        "days-since-last-sale",
+        "days_since_last_sale",
+        "days-since-last-sold",
+        "days_since_last_sold",
+        "days_since_last_sale_days",
+        "age-dr",
+        "age_dr",
+        "age",
+        "last_sale",
+    ],
+    "unit_cost": ["unit_cost", "unit-cost", "base-cost", "base_cost"],
+    "lead_time_days": ["lead_time_days", "lead_time", "lead-time-days", "lead_time_days"],
+    "returnable": ["returnable", "returnable_flag"],
 }
 
 
@@ -61,12 +124,77 @@ def _alias_to_normalized(alias: str) -> str:
     return _normalize_header(alias)
 
 
+def _is_hist_total_key(key: str) -> bool:
+    normalized = key.strip().lower()
+    if normalized == "hist":
+        return True
+    return bool(re.search(r"(?:^|[_-])(sum|total|annual|year|yr)(?:$|[_-])", normalized))
+
+
+def _header_name_matches_alias(header_name: str, alias: str) -> bool:
+    normalized_name = _normalize_header(header_name)
+    normalized_alias = _normalize_header(alias)
+    if normalized_name == normalized_alias:
+        return True
+
+    name_parts = set(part for part in normalized_name.split("_") if part)
+    alias_parts = set(part for part in normalized_alias.split("_") if part)
+    if alias_parts.issubset(name_parts):
+        return True
+
+    if normalized_alias in normalized_name or normalized_name in normalized_alias:
+        return True
+
+    if normalized_alias.startswith("hist") and normalized_name.startswith("hist"):
+        return True
+
+    return False
+
+
 def _get_from_aliases(normalized_row: dict[str, str], aliases: list[str]) -> str | None:
     for alias in aliases:
-        key = _alias_to_normalized(alias)
-        if key in normalized_row and normalized_row[key].strip() != "":
-            return normalized_row[key].strip()
+        for key, value in normalized_row.items():
+            if not _header_name_matches_alias(key, alias):
+                continue
+            if key.startswith("hist") and key not in {"hist", "hist_sum", "hist_total", "hist_year", "hist_annual"}:
+                continue
+            stripped = value.strip()
+            if stripped == "":
+                continue
+            if key.startswith("hist") and _is_hist_total_key(key):
+                return str(float(stripped) / 12)
+            return stripped
     return None
+
+
+def _is_hist_key(key: str) -> bool:
+    return bool(re.fullmatch(r"hist(?:[0-9]+|(?:[-_][a-z0-9]+)*)", key))
+
+
+def _get_monthly_demand_from_hist_fields(normalized_row: dict[str, str]) -> str | None:
+    hist_entries: list[tuple[str, float]] = []
+    for key, value in normalized_row.items():
+        if not _is_hist_key(key):
+            continue
+        stripped = value.strip()
+        if stripped == "":
+            continue
+        try:
+            hist_entries.append((key, float(stripped)))
+        except ValueError:
+            continue
+
+    if not hist_entries:
+        return None
+
+    if len(hist_entries) == 1:
+        key, value = hist_entries[0]
+        if re.search(r"(?:sum|total|annual|year)", key):
+            return str(value / 12)
+        return str(value)
+
+    total = sum(value for _, value in hist_entries)
+    return str(total / len(hist_entries))
 
 
 class ImportCsvRequest(BaseModel):
@@ -83,6 +211,100 @@ def _coerce_bool(value: str) -> bool:
     raise ValueError(f"Invalid boolean value: {value}")
 
 
+def _coerce_non_negative(value: str, field_name: str) -> float:
+    numeric = float(value)
+    if numeric < 0:
+        return 0.0
+    return numeric
+
+
+def _parse_date_like_to_days(value: str) -> int | None:
+    if value is None:
+        return None
+
+    text = value.strip()
+    if text == "":
+        return None
+
+    try:
+        num = float(text)
+        if num > 100000:
+            return max(0, int((datetime.date.today() - datetime.date(1899, 12, 30)).days - num))
+        return None
+    except ValueError:
+        pass
+
+    for fmt in (
+        "%Y-%m-%d",
+        "%m/%d/%Y",
+        "%m/%d/%y",
+        "%m-%d-%Y",
+        "%m-%d-%y",
+        "%Y/%m/%d",
+        "%m/%d/%y %H:%M:%S",
+        "%m/%d/%Y %H:%M:%S",
+        "%m-%d-%Y %H:%M:%S",
+    ):
+        try:
+            parsed = datetime.datetime.strptime(text, fmt).date()
+            return max(0, (datetime.date.today() - parsed).days)
+        except ValueError:
+            continue
+
+    try:
+        parsed = datetime.date.fromisoformat(text)
+        return max(0, (datetime.date.today() - parsed).days)
+    except ValueError:
+        return None
+
+
+def _coerce_last_sale_days(raw_value: str | None) -> str:
+    if raw_value is None:
+        return "365"
+
+    text = raw_value.strip()
+    if text == "":
+        return "365"
+
+    try:
+        return str(max(0, int(float(text))))
+    except ValueError:
+        parsed_days = _parse_date_like_to_days(text)
+        if parsed_days is not None:
+            return str(parsed_days)
+        return "365"
+
+
+def _resolve_last_sale_days(normalized_row: dict[str, str]) -> str | None:
+    direct_aliases = [
+        "last_sale_days",
+        "last-sale-days",
+        "last sale days",
+        "last-sale",
+        "last-sale-date",
+        "last_sale_date",
+        "last sale date",
+        "last-sale-dt",
+        "last_sale_dt",
+        "last-sales-date",
+        "last_sls_date",
+        "days-since-last-sale",
+        "days_since_last_sale",
+    ]
+    age_aliases = ["age-dr", "age_dr", "age"]
+
+    direct_value = _get_from_aliases(normalized_row, direct_aliases)
+    if direct_value is not None:
+        return _coerce_last_sale_days(direct_value)
+
+    for age_alias in age_aliases:
+        age_value = _get_from_aliases(normalized_row, [age_alias])
+        if age_value is not None:
+            return str(max(0, int(float(age_value) * 30)))
+
+    return None
+
+
 def _csv_row_to_part(row: dict[str, str], row_number: int) -> PartRecord:
     try:
         normalized_row = {
@@ -93,15 +315,13 @@ def _csv_row_to_part(row: dict[str, str], row_number: int) -> PartRecord:
 
         monthly_demand = _get_from_aliases(normalized_row, CSV_COLUMN_ALIASES["monthly_demand_avg"])
         if monthly_demand is None:
-            hist_sum = _get_from_aliases(normalized_row, ["hist-sum"])
-            if hist_sum is not None:
-                monthly_demand = str(float(hist_sum) / 12)
+            monthly_demand = _get_monthly_demand_from_hist_fields(normalized_row)
 
-        last_sale_days = _get_from_aliases(normalized_row, ["last_sale_days"])
+        last_sale_days = _resolve_last_sale_days(normalized_row)
+
+        # Some dealership report rows omit age values; treat as stale by default.
         if last_sale_days is None:
-            age_dr_months = _get_from_aliases(normalized_row, ["age-dr"])
-            if age_dr_months is not None:
-                last_sale_days = str(float(age_dr_months) * 30)
+            last_sale_days = "365"
 
         part_number = _get_from_aliases(normalized_row, CSV_COLUMN_ALIASES["part_number"])
         if part_number is None:
@@ -111,8 +331,6 @@ def _csv_row_to_part(row: dict[str, str], row_number: int) -> PartRecord:
             raise KeyError("on_hand")
         if monthly_demand is None:
             raise KeyError("monthly_demand_avg")
-        if last_sale_days is None:
-            raise KeyError("last_sale_days")
         unit_cost = _get_from_aliases(normalized_row, CSV_COLUMN_ALIASES["unit_cost"])
         if unit_cost is None:
             raise KeyError("unit_cost")
@@ -125,12 +343,12 @@ def _csv_row_to_part(row: dict[str, str], row_number: int) -> PartRecord:
         payload: dict[str, Any] = {
             "part_number": part_number,
             "description": description,
-            "on_hand": float(on_hand),
-            "on_order": float(on_order),
-            "monthly_demand_avg": float(monthly_demand),
-            "last_sale_days": int(float(last_sale_days)),
-            "unit_cost": float(unit_cost),
-            "lead_time_days": int(float(lead_time_days)),
+            "on_hand": _coerce_non_negative(on_hand, "on_hand"),
+            "on_order": _coerce_non_negative(on_order, "on_order"),
+            "monthly_demand_avg": _coerce_non_negative(monthly_demand, "monthly_demand_avg"),
+            "last_sale_days": max(0, int(float(last_sale_days))),
+            "unit_cost": max(0.0, float(unit_cost)),
+            "lead_time_days": max(0, int(float(lead_time_days))),
             "returnable": _coerce_bool(returnable_raw),
         }
         return PartRecord(**payload)
@@ -152,19 +370,61 @@ def _parse_parts_csv(content: str) -> list[PartRecord]:
         raise HTTPException(status_code=400, detail="CSV appears to be empty.")
 
     normalized_fieldnames = {_normalize_header(name) for name in reader.fieldnames if name is not None}
+    hist_columns_present = any(_is_hist_key(name) for name in normalized_fieldnames)
+
+    def has_compatible_field(field_name: str, aliases: list[str]) -> bool:
+        for alias in aliases:
+            for header_name in normalized_fieldnames:
+                if _header_name_matches_alias(header_name, alias):
+                    return True
+        if field_name == "monthly_demand_avg" and hist_columns_present:
+            return True
+        return False
 
     required_sources = {
-        "part_number": ["part_number", "part-no"],
-        "on_hand": ["on_hand", "qoh", "tqty", "tot-stk-qty"],
-        "monthly_demand_avg": ["monthly_demand_avg", "avg-sls", "hist-sum"],
-        "last_sale_days": ["last_sale_days", "age-dr"],
-        "unit_cost": ["unit_cost", "base-cost"],
+        "part_number": ["part_number", "part-no", "part_no"],
+        "on_hand": ["on_hand", "qoh", "tqty", "tot-stk-qty", "qty_on_hand", "qty-on-hand"],
+        "monthly_demand_avg": [
+            "monthly_demand_avg",
+            "monthly-demand-avg",
+            "monthly demand avg",
+            "avg-sls",
+            "avg_sls",
+            "hist",
+            "hist-sum",
+            "hist_sum",
+            "hist-total",
+            "hist_total",
+            "demand",
+            "monthly_demand",
+        ],
+        "last_sale_days": [
+            "last_sale_days",
+            "last-sale-days",
+            "last sale days",
+            "last-sale",
+            "last-sale-date",
+            "last_sale_date",
+            "last sale date",
+            "last-sale-dt",
+            "last_sale_dt",
+            "last-sales-date",
+            "last_sls_date",
+            "last-sls-date",
+            "age-dr",
+            "age_dr",
+            "age",
+            "days-since-last-sale",
+            "days_since_last_sale",
+            "sale_days",
+            "last_sale",
+        ],
+        "unit_cost": ["unit_cost", "unit-cost", "base-cost", "base_cost"],
     }
 
     missing_columns: list[str] = []
     for internal_name, aliases in required_sources.items():
-        alias_keys = {_alias_to_normalized(alias) for alias in aliases}
-        if normalized_fieldnames.isdisjoint(alias_keys):
+        if not has_compatible_field(internal_name, aliases):
             missing_columns.append(internal_name)
 
     if missing_columns:
