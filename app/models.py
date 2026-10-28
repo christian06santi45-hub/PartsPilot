@@ -13,6 +13,15 @@ ActionType = Literal[
     "buy",
     "stop_ordering",
 ]
+ExportActionFilter = Literal[
+    "all",
+    "liquidate",
+    "return_to_vendor",
+    "transfer",
+    "hold",
+    "buy",
+    "stop_ordering",
+]
 
 
 class PartRecord(BaseModel):
@@ -42,6 +51,10 @@ class PlanRequest(BaseModel):
     constraints: PlanConstraints = PlanConstraints()
 
 
+class ExportPlanRequest(PlanRequest):
+    action_filter: ExportActionFilter = "all"
+
+
 class PartRecommendation(BaseModel):
     part_number: str
     description: str
@@ -49,6 +62,7 @@ class PartRecommendation(BaseModel):
     projected_turns: float
     obsolescence_risk: float
     stockout_risk: float
+    fill_rate_pct: float
     recommended_action: ActionType
     recommended_order_qty: float
     confidence_score: float

@@ -28,6 +28,15 @@
 
           <div class="controls-top">
             <button id="download-template" class="ghost">Download CSV Template</button>
+            <select id="export-action-filter" aria-label="Export action filter">
+              <option value="all">Export: All</option>
+              <option value="buy">Export: Buy</option>
+              <option value="hold">Export: Hold</option>
+              <option value="return_to_vendor">Export: Return to Vendor</option>
+              <option value="stop_ordering">Export: Stop Ordering</option>
+              <option value="transfer">Export: Transfer</option>
+              <option value="liquidate">Export: Liquidate</option>
+            </select>
             <button id="export-plan" class="ghost">Export Plan CSV</button>
           </div>
 
@@ -130,6 +139,7 @@
                     <th data-sort-key="confidence_score">Confidence</th>
                     <th data-sort-key="obsolescence_risk">Obsolete Risk</th>
                     <th data-sort-key="stockout_risk">Stockout Risk</th>
+                    <th data-sort-key="fill_rate_pct">Fill Rate</th>
                     <th data-sort-key="current_turns">Current Turns</th>
                     <th data-sort-key="projected_turns">Projected Turns</th>
                     <th data-sort-key="recommended_order_qty">Order Qty</th>
@@ -145,6 +155,6 @@
       </main>
     </div>
 
-    <script src="/web/app.js?v=20261027-1" defer></script>
+    <script src="/web/app.js?v=20261028-3" defer></script>
   </body>
   </html>

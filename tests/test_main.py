@@ -1,4 +1,6 @@
 import datetime
+import csv
+import io
 import unittest
 
 from fastapi.testclient import TestClient
@@ -139,6 +141,137 @@ class CsvImportTests(unittest.TestCase):
         body = response.json()
         self.assertEqual(len(body["parts"]), 1)
         self.assertEqual(body["parts"][0]["on_hand"], 0.0)
+
+    def test_import_csv_supports_thousands_separators_and_whitespace_tables(self) -> None:
+        whitespace_csv = (
+            "PART-NO      CURRENT-RPT      QOH      PO-QPR-DR      AVG-SLS      BASE-COST      AGE-DR\n"
+            "ALT-007      Booster Pump      1,250      120      18.5      2,490.50      14\n"
+        )
+
+        response = self.client.post("/api/parts/import-csv", json={"csv_text": whitespace_csv})
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(len(body["parts"]), 1)
+        self.assertEqual(body["parts"][0]["part_number"], "ALT-007")
+        self.assertEqual(body["parts"][0]["on_hand"], 1250.0)
+        self.assertEqual(body["parts"][0]["on_order"], 120.0)
+        self.assertEqual(body["parts"][0]["monthly_demand_avg"], 18.5)
+        self.assertEqual(body["parts"][0]["unit_cost"], 2490.5)
+        self.assertEqual(body["parts"][0]["last_sale_days"], 420)
+
+    def test_import_csv_supports_erp_style_headers(self) -> None:
+        csv_text = (
+            "PART-NO,DESC,OOH,QPR,MNS,BASE-COS,AGE-DR\n"
+            "ALT-008,Water Pump,42,7,9.5,188.25,32\n"
+        )
+
+        response = self.client.post("/api/parts/import-csv", json={"csv_text": csv_text})
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(len(body["parts"]), 1)
+        self.assertEqual(body["parts"][0]["part_number"], "ALT-008")
+        self.assertEqual(body["parts"][0]["description"], "Water Pump")
+        self.assertEqual(body["parts"][0]["on_hand"], 42.0)
+        self.assertEqual(body["parts"][0]["on_order"], 7.0)
+        self.assertEqual(body["parts"][0]["monthly_demand_avg"], 9.5)
+        self.assertEqual(body["parts"][0]["unit_cost"], 188.25)
+        self.assertEqual(body["parts"][0]["last_sale_days"], 960)
+
+    def test_import_csv_supports_tab_delimited_exports(self) -> None:
+        csv_text = (
+            "PART-NO\tDESC\tOOH\tQPR\tMNS\tBASE-COS\tAGE-DR\n"
+            "ALT-009\tFan Belt\t18\t2\t4.0\t27.99\t10\n"
+        )
+
+        response = self.client.post("/api/parts/import-csv", json={"csv_text": csv_text})
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(len(body["parts"]), 1)
+        self.assertEqual(body["parts"][0]["part_number"], "ALT-009")
+        self.assertEqual(body["parts"][0]["monthly_demand_avg"], 4.0)
+
+    def test_import_csv_defaults_monthly_demand_to_zero_when_missing(self) -> None:
+        csv_text = (
+            "PART-NO,DESC,OOH,QPR,BASE-COS,AGE-DR\n"
+            "ALT-010,No Demand Column,5,1,19.99,8\n"
+        )
+
+        response = self.client.post("/api/parts/import-csv", json={"csv_text": csv_text})
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(len(body["parts"]), 1)
+        self.assertEqual(body["parts"][0]["part_number"], "ALT-010")
+        self.assertEqual(body["parts"][0]["monthly_demand_avg"], 0.0)
+
+    def test_import_csv_defaults_last_sale_days_when_column_missing(self) -> None:
+        csv_text = (
+            "PART-NO,DESC,OOH,QPR,MNS,BASE-COS\n"
+            "ALT-011,No Age Column,12,0,3.5,45.50\n"
+        )
+
+        response = self.client.post("/api/parts/import-csv", json={"csv_text": csv_text})
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(len(body["parts"]), 1)
+        self.assertEqual(body["parts"][0]["part_number"], "ALT-011")
+        self.assertEqual(body["parts"][0]["last_sale_days"], 365)
+
+    def test_import_csv_defaults_non_numeric_monthly_demand_to_zero(self) -> None:
+        csv_text = (
+            "PART-NO,DESC,OOH,QPR,MNS,BASE-COS,AGE-DR\n"
+            "ALT-013,Bad MNS Value,10,1,GNBULK,15.00,5\n"
+        )
+
+        response = self.client.post("/api/parts/import-csv", json={"csv_text": csv_text})
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(len(body["parts"]), 1)
+        self.assertEqual(body["parts"][0]["part_number"], "ALT-013")
+        self.assertEqual(body["parts"][0]["monthly_demand_avg"], 0.0)
+
+
+class ExportPlanCsvTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.client = TestClient(app)
+
+    def test_export_plan_csv_includes_dollar_and_fill_rate_columns(self) -> None:
+        demo = self.client.get("/api/demo-data").json()
+        payload = {"parts": demo["parts"], "constraints": demo["constraints"], "action_filter": "all"}
+
+        response = self.client.post("/api/plan/export-csv", json=payload)
+
+        self.assertEqual(response.status_code, 200)
+        text = response.text
+        rows = list(csv.DictReader(io.StringIO(text)))
+        self.assertGreater(len(rows), 0)
+        first_row = rows[0]
+        self.assertIn("fill_rate_pct", first_row)
+        self.assertIn("unit_cost_usd", first_row)
+        self.assertIn("on_hand_value_usd", first_row)
+        self.assertIn("on_order_value_usd", first_row)
+        self.assertIn("inventory_value_impact_usd", first_row)
+        self.assertTrue(first_row["unit_cost_usd"].startswith("$"))
+
+    def test_export_plan_csv_respects_action_filter(self) -> None:
+        demo = self.client.get("/api/demo-data").json()
+        plan = self.client.post("/api/plan", json={"parts": demo["parts"], "constraints": demo["constraints"]}).json()
+        target_action = plan["recommendations"][0]["recommended_action"]
+
+        response = self.client.post(
+            "/api/plan/export-csv",
+            json={"parts": demo["parts"], "constraints": demo["constraints"], "action_filter": target_action},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        rows = list(csv.DictReader(io.StringIO(response.text)))
+        self.assertGreater(len(rows), 0)
+        self.assertTrue(all(row["recommended_action"] == target_action for row in rows))
 
 
 if __name__ == "__main__":

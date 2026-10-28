@@ -14,7 +14,13 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app.engine import build_plan
-from app.models import PartRecord, PlanConstraints, PlanRequest, PlanResponse
+from app.models import (
+    ExportPlanRequest,
+    PartRecord,
+    PlanConstraints,
+    PlanRequest,
+    PlanResponse,
+)
 
 app = FastAPI(title="PartsPilot", version="0.1.0")
 
@@ -52,10 +58,10 @@ CSV_COLUMNS = [
 ]
 
 CSV_COLUMN_ALIASES: dict[str, list[str]] = {
-    "part_number": ["part_number", "part-no", "part no", "partno", "part_no"],
-    "description": ["description", "current-rpt", "current_rpt", "desc"],
-    "on_hand": ["on_hand", "qoh", "tqty", "tot-stk-qty", "qty_on_hand", "qty-on-hand"],
-    "on_order": ["on_order", "po-qpr-dr", "po_qpr_dr"],
+    "part_number": ["part_number", "part-no", "part no", "partno", "part_no", "part-no-new"],
+    "description": ["description", "current-rpt", "current_rpt", "desc", "dsc", "current_desc", "item_desc"],
+    "on_hand": ["on_hand", "qoh", "ooh", "tqty", "tot-stk-qty", "qty_on_hand", "qty-on-hand", "onhand"],
+    "on_order": ["on_order", "po-qpr-dr", "po_qpr_dr", "qpr", "qty_open_po", "qty_on_order"],
     "monthly_demand_avg": [
         "monthly_demand_avg",
         "monthly-demand-avg",
@@ -83,6 +89,8 @@ CSV_COLUMN_ALIASES: dict[str, list[str]] = {
         "avg_12m",
         "avg_12_month",
         "demand",
+        "mns",
+        "monthly_net_sales",
     ],
     "last_sale_days": [
         "last_sale_days",
@@ -109,7 +117,7 @@ CSV_COLUMN_ALIASES: dict[str, list[str]] = {
         "age",
         "last_sale",
     ],
-    "unit_cost": ["unit_cost", "unit-cost", "base-cost", "base_cost"],
+    "unit_cost": ["unit_cost", "unit-cost", "base-cost", "base_cost", "base-cos", "base_cos"],
     "lead_time_days": ["lead_time_days", "lead_time", "lead-time-days", "lead_time_days"],
     "returnable": ["returnable", "returnable_flag"],
 }
@@ -162,7 +170,10 @@ def _get_from_aliases(normalized_row: dict[str, str], aliases: list[str]) -> str
             if stripped == "":
                 continue
             if key.startswith("hist") and _is_hist_total_key(key):
-                return str(float(stripped) / 12)
+                numeric = _parse_float(stripped)
+                if numeric is not None:
+                    return str(numeric / 12)
+                return stripped
             return stripped
     return None
 
@@ -179,10 +190,10 @@ def _get_monthly_demand_from_hist_fields(normalized_row: dict[str, str]) -> str 
         stripped = value.strip()
         if stripped == "":
             continue
-        try:
-            hist_entries.append((key, float(stripped)))
-        except ValueError:
+        numeric = _parse_float(stripped)
+        if numeric is None:
             continue
+        hist_entries.append((key, numeric))
 
     if not hist_entries:
         return None
@@ -197,22 +208,80 @@ def _get_monthly_demand_from_hist_fields(normalized_row: dict[str, str]) -> str 
     return str(total / len(hist_entries))
 
 
+def _infer_monthly_demand_from_row(normalized_row: dict[str, str]) -> str | None:
+    candidate_keys: list[tuple[str, float]] = []
+    for key, value in normalized_row.items():
+        if key in {"part_no", "part_number", "desc", "description", "current_rpt", "qoh", "ooh", "on_hand", "qpr", "on_order", "base_cost", "base_cos", "unit_cost", "age_dr", "age", "lead_time_days", "lead_time", "returnable", "returnable_flag"}:
+            continue
+
+        stripped = value.strip()
+        if stripped == "":
+            continue
+        numeric = _parse_float(stripped)
+        if numeric is None:
+            continue
+
+        if any(token in key for token in ["avg", "sale", "sls", "demand", "mns", "need", "usage"]):
+            candidate_keys.append((key, numeric))
+            continue
+
+        if any(token in key for token in ["qty", "count", "stock"]) and "on" not in key and "po" not in key and "cost" not in key:
+            candidate_keys.append((key, numeric))
+
+    if not candidate_keys:
+        return None
+
+    if len(candidate_keys) == 1:
+        return str(candidate_keys[0][1])
+
+    best_key, best_value = max(candidate_keys, key=lambda item: (1 if any(token in item[0] for token in ["avg", "sale", "sls", "demand", "mns"]) else 0, abs(item[1])))
+    return str(best_value)
+
+
 class ImportCsvRequest(BaseModel):
     csv_text: str | None = None
     csv_texts: list[str] | None = None
 
 
+def _clean_numeric_text(value: Any) -> str:
+    if value is None:
+        return ""
+
+    text = str(value).strip()
+    if text == "":
+        return ""
+
+    normalized = text.replace("%", "").replace("$", "")
+    normalized = normalized.replace("\u2013", "-").replace("\u2014", "-")
+    normalized = normalized.replace("(", "-").replace(")", "") if normalized.startswith("(") and normalized.endswith(")") else normalized
+    if normalized.lower() in {"n/a", "na", "n.a", "null", "none", "-"}:
+        return ""
+    return normalized.replace(",", "")
+
+
+def _parse_float(value: Any) -> float | None:
+    cleaned = _clean_numeric_text(value)
+    if cleaned == "":
+        return None
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
 def _coerce_bool(value: str) -> bool:
     normalized = value.strip().lower()
-    if normalized in {"true", "1", "yes", "y"}:
+    if normalized in {"true", "1", "yes", "y", "r", "returnable"}:
         return True
-    if normalized in {"false", "0", "no", "n"}:
+    if normalized in {"false", "0", "no", "n", "nr", "non-returnable"}:
         return False
     raise ValueError(f"Invalid boolean value: {value}")
 
 
 def _coerce_non_negative(value: str, field_name: str) -> float:
-    numeric = float(value)
+    numeric = _parse_float(value)
+    if numeric is None:
+        raise ValueError(f"Invalid numeric value for {field_name}: {value}")
     if numeric < 0:
         return 0.0
     return numeric
@@ -226,13 +295,11 @@ def _parse_date_like_to_days(value: str) -> int | None:
     if text == "":
         return None
 
-    try:
-        num = float(text)
+    num = _parse_float(text)
+    if num is not None:
         if num > 100000:
             return max(0, int((datetime.date.today() - datetime.date(1899, 12, 30)).days - num))
         return None
-    except ValueError:
-        pass
 
     for fmt in (
         "%Y-%m-%d",
@@ -267,12 +334,16 @@ def _coerce_last_sale_days(raw_value: str | None) -> str:
         return "365"
 
     try:
-        return str(max(0, int(float(text))))
+        numeric = _parse_float(text)
+        if numeric is not None:
+            return str(max(0, int(numeric)))
     except ValueError:
-        parsed_days = _parse_date_like_to_days(text)
-        if parsed_days is not None:
-            return str(parsed_days)
-        return "365"
+        pass
+
+    parsed_days = _parse_date_like_to_days(text)
+    if parsed_days is not None:
+        return str(parsed_days)
+    return "365"
 
 
 def _resolve_last_sale_days(normalized_row: dict[str, str]) -> str | None:
@@ -300,7 +371,9 @@ def _resolve_last_sale_days(normalized_row: dict[str, str]) -> str | None:
     for age_alias in age_aliases:
         age_value = _get_from_aliases(normalized_row, [age_alias])
         if age_value is not None:
-            return str(max(0, int(float(age_value) * 30)))
+            numeric_age = _parse_float(age_value)
+            if numeric_age is not None:
+                return str(max(0, int(numeric_age * 30)))
 
     return None
 
@@ -316,6 +389,12 @@ def _csv_row_to_part(row: dict[str, str], row_number: int) -> PartRecord:
         monthly_demand = _get_from_aliases(normalized_row, CSV_COLUMN_ALIASES["monthly_demand_avg"])
         if monthly_demand is None:
             monthly_demand = _get_monthly_demand_from_hist_fields(normalized_row)
+        if monthly_demand is None:
+            monthly_demand = _infer_monthly_demand_from_row(normalized_row)
+        if monthly_demand is None:
+            monthly_demand = "0"
+        elif _parse_float(monthly_demand) is None:
+            monthly_demand = "0"
 
         last_sale_days = _resolve_last_sale_days(normalized_row)
 
@@ -329,8 +408,6 @@ def _csv_row_to_part(row: dict[str, str], row_number: int) -> PartRecord:
         on_hand = _get_from_aliases(normalized_row, CSV_COLUMN_ALIASES["on_hand"])
         if on_hand is None:
             raise KeyError("on_hand")
-        if monthly_demand is None:
-            raise KeyError("monthly_demand_avg")
         unit_cost = _get_from_aliases(normalized_row, CSV_COLUMN_ALIASES["unit_cost"])
         if unit_cost is None:
             raise KeyError("unit_cost")
@@ -346,9 +423,9 @@ def _csv_row_to_part(row: dict[str, str], row_number: int) -> PartRecord:
             "on_hand": _coerce_non_negative(on_hand, "on_hand"),
             "on_order": _coerce_non_negative(on_order, "on_order"),
             "monthly_demand_avg": _coerce_non_negative(monthly_demand, "monthly_demand_avg"),
-            "last_sale_days": max(0, int(float(last_sale_days))),
-            "unit_cost": max(0.0, float(unit_cost)),
-            "lead_time_days": max(0, int(float(lead_time_days))),
+            "last_sale_days": max(0, int(_parse_float(last_sale_days) or 0)),
+            "unit_cost": max(0.0, _parse_float(unit_cost) or 0.0),
+            "lead_time_days": max(0, int(_parse_float(lead_time_days) or 0)),
             "returnable": _coerce_bool(returnable_raw),
         }
         return PartRecord(**payload)
@@ -364,12 +441,69 @@ def _csv_row_to_part(row: dict[str, str], row_number: int) -> PartRecord:
         ) from exc
 
 
+def _parse_whitespace_table(content: str) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    lines = [line for line in content.splitlines() if line.strip()]
+    for line in lines:
+        if re.fullmatch(r"[-_=|\\/ ]+", line.strip()):
+            continue
+        cells = re.split(r"\t+| {2,}", line.strip())
+        if len(cells) < 2:
+            continue
+        rows.append({str(index): cell.strip() for index, cell in enumerate(cells)})
+    return rows
+
+
 def _parse_parts_csv(content: str) -> list[PartRecord]:
-    reader = csv.DictReader(io.StringIO(content))
-    if reader.fieldnames is None:
+    raw_rows: list[dict[str, str]] = []
+    reader_headers: list[str] | None = None
+
+    first_line = next((line.strip() for line in content.splitlines() if line.strip()), "")
+    if re.search(r"\s{2,}", first_line) and not any(delim in first_line for delim in [",", ";", "\t"]):
+        fallback_rows = _parse_whitespace_table(content)
+        if not fallback_rows:
+            raise HTTPException(status_code=400, detail="CSV appears to be empty.")
+
+        header = [cell.strip() for cell in fallback_rows[0].values()]
+        normalized_header = [_normalize_header(cell) for cell in header]
+        raw_rows = [
+            {normalized_header[index]: cell for index, cell in enumerate(row.values())}
+            for row in fallback_rows[1:]
+        ]
+        reader_headers = header
+    else:
+        try:
+            delimiter = ","
+            try:
+                sniffed = csv.Sniffer().sniff(content[:4096], delimiters=",;\t|")
+                delimiter = sniffed.delimiter
+            except csv.Error:
+                if "\t" in first_line and "," not in first_line:
+                    delimiter = "\t"
+                elif ";" in first_line and "," not in first_line:
+                    delimiter = ";"
+            reader = csv.DictReader(io.StringIO(content), delimiter=delimiter)
+            if reader.fieldnames is None:
+                raise HTTPException(status_code=400, detail="CSV appears to be empty.")
+            reader_headers = [header.strip() for header in reader.fieldnames if header is not None]
+            raw_rows = list(reader)
+        except (csv.Error, HTTPException):
+            fallback_rows = _parse_whitespace_table(content)
+            if not fallback_rows:
+                raise HTTPException(status_code=400, detail="CSV appears to be empty.")
+
+            header = [cell.strip() for cell in fallback_rows[0].values()]
+            normalized_header = [_normalize_header(cell) for cell in header]
+            raw_rows = [
+                {normalized_header[index]: cell for index, cell in enumerate(row.values())}
+                for row in fallback_rows[1:]
+            ]
+            reader_headers = header
+
+    if not raw_rows:
         raise HTTPException(status_code=400, detail="CSV appears to be empty.")
 
-    normalized_fieldnames = {_normalize_header(name) for name in reader.fieldnames if name is not None}
+    normalized_fieldnames = {_normalize_header(name) for name in reader_headers or []}
     hist_columns_present = any(_is_hist_key(name) for name in normalized_fieldnames)
 
     def has_compatible_field(field_name: str, aliases: list[str]) -> bool:
@@ -382,44 +516,9 @@ def _parse_parts_csv(content: str) -> list[PartRecord]:
         return False
 
     required_sources = {
-        "part_number": ["part_number", "part-no", "part_no"],
-        "on_hand": ["on_hand", "qoh", "tqty", "tot-stk-qty", "qty_on_hand", "qty-on-hand"],
-        "monthly_demand_avg": [
-            "monthly_demand_avg",
-            "monthly-demand-avg",
-            "monthly demand avg",
-            "avg-sls",
-            "avg_sls",
-            "hist",
-            "hist-sum",
-            "hist_sum",
-            "hist-total",
-            "hist_total",
-            "demand",
-            "monthly_demand",
-        ],
-        "last_sale_days": [
-            "last_sale_days",
-            "last-sale-days",
-            "last sale days",
-            "last-sale",
-            "last-sale-date",
-            "last_sale_date",
-            "last sale date",
-            "last-sale-dt",
-            "last_sale_dt",
-            "last-sales-date",
-            "last_sls_date",
-            "last-sls-date",
-            "age-dr",
-            "age_dr",
-            "age",
-            "days-since-last-sale",
-            "days_since_last_sale",
-            "sale_days",
-            "last_sale",
-        ],
-        "unit_cost": ["unit_cost", "unit-cost", "base-cost", "base_cost"],
+        "part_number": ["part_number", "part-no", "part_no", "part-no-new"],
+        "on_hand": ["on_hand", "qoh", "ooh", "tqty", "tot-stk-qty", "qty_on_hand", "qty-on-hand", "onhand"],
+        "unit_cost": ["unit_cost", "unit-cost", "base-cost", "base_cost", "base-cos", "base_cos"],
     }
 
     missing_columns: list[str] = []
@@ -438,7 +537,7 @@ def _parse_parts_csv(content: str) -> list[PartRecord]:
         )
 
     parts: list[PartRecord] = []
-    for index, row in enumerate(reader, start=2):
+    for index, row in enumerate(raw_rows, start=2):
         if not any((value or "").strip() for value in row.values()):
             continue
         parts.append(_csv_row_to_part(row, row_number=index))
@@ -582,8 +681,16 @@ def create_plan(payload: PlanRequest) -> PlanResponse:
 
 
 @app.post("/api/plan/export-csv")
-def export_plan_csv(payload: PlanRequest) -> StreamingResponse:
+def export_plan_csv(payload: ExportPlanRequest) -> StreamingResponse:
     plan = create_plan(payload)
+    parts_by_number = {part.part_number: part for part in payload.parts}
+
+    action_filter = payload.action_filter
+    filtered_recommendations = (
+        plan.recommendations
+        if action_filter == "all"
+        else [rec for rec in plan.recommendations if rec.recommended_action == action_filter]
+    )
 
     output = io.StringIO()
     writer = csv.writer(output)
@@ -595,15 +702,28 @@ def export_plan_csv(payload: PlanRequest) -> StreamingResponse:
             "confidence_score",
             "obsolescence_risk",
             "stockout_risk",
+            "fill_rate_pct",
             "current_turns",
             "projected_turns",
             "recommended_order_qty",
+            "unit_cost_usd",
+            "on_hand_value_usd",
+            "on_order_value_usd",
             "inventory_value_impact",
+            "inventory_value_impact_usd",
             "rationale",
         ]
     )
 
-    for rec in plan.recommendations:
+    for rec in filtered_recommendations:
+        source_part = parts_by_number.get(rec.part_number)
+        unit_cost = source_part.unit_cost if source_part is not None else 0.0
+        on_hand = source_part.on_hand if source_part is not None else 0.0
+        on_order = source_part.on_order if source_part is not None else 0.0
+
+        on_hand_value = on_hand * unit_cost
+        on_order_value = on_order * unit_cost
+
         writer.writerow(
             [
                 rec.part_number,
@@ -612,16 +732,22 @@ def export_plan_csv(payload: PlanRequest) -> StreamingResponse:
                 rec.confidence_score,
                 rec.obsolescence_risk,
                 rec.stockout_risk,
+                rec.fill_rate_pct,
                 rec.current_turns,
                 rec.projected_turns,
                 rec.recommended_order_qty,
+                f"${unit_cost:,.2f}",
+                f"${on_hand_value:,.2f}",
+                f"${on_order_value:,.2f}",
                 rec.inventory_value_impact,
+                f"${rec.inventory_value_impact:,.2f}",
                 rec.rationale,
             ]
         )
 
+    filename_suffix = action_filter if action_filter != "all" else "all"
     return StreamingResponse(
         iter([output.getvalue()]),
         media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=partspilot_plan.csv"},
+        headers={"Content-Disposition": f"attachment; filename=partspilot_plan_{filename_suffix}.csv"},
     )

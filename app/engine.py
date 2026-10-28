@@ -240,6 +240,7 @@ def build_plan(parts: list[PartRecord], constraints: PlanConstraints) -> PlanRes
                 projected_turns=metrics.projected_turns,
                 obsolescence_risk=metrics.obsolescence_risk,
                 stockout_risk=metrics.stockout_risk,
+                fill_rate_pct=round((1.0 - metrics.stockout_risk) * 100.0, 2),
                 recommended_action=metrics.recommended_action,
                 recommended_order_qty=metrics.recommended_order_qty,
                 confidence_score=metrics.confidence_score,

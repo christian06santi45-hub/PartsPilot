@@ -19,7 +19,7 @@ improve turn rate, and keep fill-rate risk under control.
 - Supports dealership-style file workflow:
 	- Download import CSV template
 	- Upload filled parts CSV
-	- Export recommendation plan CSV
+	- Export recommendation plan CSV (all actions or filtered by action)
 
 ## Tech Stack
 
@@ -89,7 +89,15 @@ Planner constraints now support advanced tuning fields in addition to the core c
 - `POST /api/plan` - returns KPI summary and recommendations
 - `GET /api/csv-template` - downloadable import template
 - `POST /api/parts/import-csv` - parses CSV into parts payload
-- `POST /api/plan/export-csv` - returns recommendations as CSV file
+- `POST /api/plan/export-csv` - returns recommendations as CSV file (supports `action_filter`)
+
+Export CSV now includes:
+- `fill_rate_pct`
+- dollar-formatted values:
+  - `unit_cost_usd`
+  - `on_hand_value_usd`
+  - `on_order_value_usd`
+  - `inventory_value_impact_usd`
 
 ## Notes
 

@@ -10,6 +10,7 @@ const recommendationBody = document.getElementById("recommendation-body");
 const kpiGrid = document.getElementById("kpi-grid");
 const resultStatusEl = document.getElementById("result-status");
 const actionFilterEl = document.getElementById("action-filter");
+const exportActionFilterEl = document.getElementById("export-action-filter");
 
 const targetReductionEl = document.getElementById("target-reduction");
 const minFillRateEl = document.getElementById("min-fill-rate");
@@ -67,10 +68,10 @@ const CSV_COLUMNS = [
 ];
 
 const CSV_COLUMN_ALIASES = {
-  part_number: ["part_number", "part-no", "part no", "partno", "part_no"],
-  description: ["description", "current-rpt", "current_rpt", "desc"],
-  on_hand: ["on_hand", "qoh", "tqty", "tot-stk-qty", "qty_on_hand", "qty-on-hand"],
-  on_order: ["on_order", "po-qpr-dr", "po_qpr_dr"],
+  part_number: ["part_number", "part-no", "part no", "partno", "part_no", "part-no-new"],
+  description: ["description", "current-rpt", "current_rpt", "desc", "dsc", "current_desc", "item_desc"],
+  on_hand: ["on_hand", "qoh", "ooh", "tqty", "tot-stk-qty", "qty_on_hand", "qty-on-hand", "onhand"],
+  on_order: ["on_order", "po-qpr-dr", "po_qpr_dr", "qpr", "qty_open_po", "qty_on_order"],
   monthly_demand_avg: [
     "monthly_demand_avg",
     "monthly-demand-avg",
@@ -98,6 +99,8 @@ const CSV_COLUMN_ALIASES = {
     "avg_12m",
     "avg_12_month",
     "demand",
+    "mns",
+    "monthly_net_sales",
   ],
   last_sale_days: [
     "last_sale_days",
@@ -124,7 +127,7 @@ const CSV_COLUMN_ALIASES = {
     "age",
     "last_sale",
   ],
-  unit_cost: ["unit_cost", "unit-cost", "base-cost", "base_cost"],
+  unit_cost: ["unit_cost", "unit-cost", "base-cost", "base_cost", "base-cos", "base_cos"],
   lead_time_days: ["lead_time_days", "lead_time", "lead-time-days"],
   returnable: ["returnable", "returnable_flag"],
 };
@@ -135,6 +138,34 @@ function normalizeHeader(name) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "_")
     .replace(/^_+|_+$/g, "");
+}
+
+function cleanNumericValue(value) {
+  if (value === null || value === undefined) {
+    return "";
+  }
+
+  let text = String(value).trim();
+  if (!text || ["n/a", "na", "n.a", "null", "none", "-", "--"].includes(text.toLowerCase())) {
+    return "";
+  }
+
+  text = text.replace(/[$%]/g, "");
+  if (text.startsWith("(") && text.endsWith(")")) {
+    text = `-${text.slice(1, -1)}`;
+  }
+
+  return text.replace(/,/g, "");
+}
+
+function parseNumericValue(value) {
+  const cleaned = cleanNumericValue(value);
+  if (!cleaned) {
+    return null;
+  }
+
+  const parsed = Number(cleaned);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function isHistTotalKey(key) {
@@ -148,8 +179,8 @@ function parseDateToDays(value) {
     return null;
   }
 
-  const asNumber = Number(text);
-  if (Number.isFinite(asNumber) && asNumber > 100000) {
+  const asNumber = parseNumericValue(text);
+  if (asNumber !== null && asNumber > 100000) {
     return Math.max(0, Math.round((Date.now() - new Date(1899, 11, 30).getTime()) / 86400000 - asNumber));
   }
 
@@ -167,8 +198,8 @@ function coerceLastSaleDays(value) {
     return "365";
   }
 
-  const numeric = Number(text);
-  if (Number.isFinite(numeric)) {
+  const numeric = parseNumericValue(text);
+  if (numeric !== null) {
     return String(Math.max(0, Math.round(numeric)));
   }
 
@@ -200,7 +231,10 @@ function resolveLastSaleDays(row) {
   for (const ageKey of ["age-dr", "age_dr", "age"]) {
     const ageMonths = getByAliases(row, [ageKey]);
     if (ageMonths !== null) {
-      return String(Math.max(0, Math.round(Number(ageMonths) * 30)));
+      const numericAge = parseNumericValue(ageMonths);
+      if (numericAge !== null) {
+        return String(Math.max(0, Math.round(numericAge * 30)));
+      }
     }
   }
 
@@ -243,7 +277,8 @@ function getByAliases(row, aliases) {
         continue;
       }
       if (normalizedKey.startsWith("hist") && isHistTotalKey(key)) {
-        return String(Number(rawValue) / 12);
+        const numericValue = parseNumericValue(rawValue);
+        return numericValue !== null ? String(numericValue / 12) : rawValue;
       }
       return rawValue;
     }
@@ -258,8 +293,8 @@ function isHistFieldName(name) {
 function getMonthlyDemandFromHist(row) {
   const histEntries = Object.entries(row)
     .filter(([key]) => isHistFieldName(key))
-    .map(([key, value]) => ({ key, value: Number(String(value).trim()) }))
-    .filter(({ value }) => Number.isFinite(value));
+    .map(([key, value]) => ({ key, value: parseNumericValue(value) }))
+    .filter(({ value }) => value !== null);
 
   if (histEntries.length === 0) {
     return null;
@@ -275,6 +310,35 @@ function getMonthlyDemandFromHist(row) {
 
   const total = histEntries.reduce((sum, entry) => sum + entry.value, 0);
   return String(total / histEntries.length);
+}
+
+function inferMonthlyDemand(row) {
+  const candidates = Object.entries(row)
+    .filter(([key]) => !["part_no", "part_number", "desc", "description", "current_rpt", "qoh", "ooh", "on_hand", "qpr", "on_order", "base_cost", "base_cos", "unit_cost", "age_dr", "age", "lead_time_days", "lead_time", "returnable", "returnable_flag"].includes(normalizeHeader(key)))
+    .map(([key, value]) => ({ key, value: parseNumericValue(value) }))
+    .filter(({ value }) => value !== null);
+
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  const scored = candidates.map((entry) => {
+    const key = normalizeHeader(entry.key);
+    const score = ["avg", "sale", "sls", "demand", "mns", "need", "usage"].some((token) => key.includes(token)) ? 1 : 0;
+    return { ...entry, score, key };
+  });
+
+  const best = scored.reduce((currentBest, item) => {
+    if (!currentBest) {
+      return item;
+    }
+    if (item.score !== currentBest.score) {
+      return item.score > currentBest.score ? item : currentBest;
+    }
+    return Math.abs(item.value) > Math.abs(currentBest.value) ? item : currentBest;
+  }, null);
+
+  return best ? String(best.value) : null;
 }
 
 function currency(value) {
@@ -293,17 +357,37 @@ function formatAction(action) {
   return action.replaceAll("_", " ");
 }
 
+function parseWhitespaceTableRows(csvText) {
+  return csvText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !/^[-_=|\\/ ]+$/.test(line))
+    .map((line) => line.split(/\t+| {2,}/).map((cell) => cell.trim()))
+    .filter((cells) => cells.length > 1 && cells.some((cell) => cell !== ""));
+}
+
 function parseCsvRows(csvText) {
+  const sanitized = (csvText || "").replace(/^\ufeff/, "");
+  const firstLine = sanitized.split(/\r?\n/).find((line) => line.trim() !== "") || "";
+  if (!sanitized.includes(",") && !sanitized.includes(";") && !sanitized.includes("\t")) {
+    return parseWhitespaceTableRows(sanitized);
+  }
+  const delimiter = firstLine.includes("\t") && !firstLine.includes(",")
+    ? "\t"
+    : firstLine.includes(";") && !firstLine.includes(",")
+      ? ";"
+      : ",";
+
   const rows = [];
   let row = [];
   let field = "";
   let inQuotes = false;
 
-  for (let index = 0; index < csvText.length; index += 1) {
-    const char = csvText[index];
+  for (let index = 0; index < sanitized.length; index += 1) {
+    const char = sanitized[index];
 
     if (char === '"') {
-      if (inQuotes && csvText[index + 1] === '"') {
+      if (inQuotes && sanitized[index + 1] === '"') {
         field += '"';
         index += 1;
       } else {
@@ -312,14 +396,14 @@ function parseCsvRows(csvText) {
       continue;
     }
 
-    if (!inQuotes && char === ",") {
+    if (!inQuotes && char === delimiter) {
       row.push(field);
       field = "";
       continue;
     }
 
     if (!inQuotes && (char === "\n" || char === "\r")) {
-      if (char === "\r" && csvText[index + 1] === "\n") {
+      if (char === "\r" && sanitized[index + 1] === "\n") {
         index += 1;
       }
 
@@ -357,8 +441,8 @@ function coerceCsvBoolean(value, rowNumber) {
 }
 
 function parseRequiredNumber(value, fieldName, rowNumber) {
-  const parsed = Number(value);
-  if (Number.isNaN(parsed)) {
+  const parsed = parseNumericValue(value);
+  if (parsed === null) {
     throw new Error(`Invalid numeric value for ${fieldName} at CSV row ${rowNumber}.`);
   }
   return Math.max(0, parsed);
@@ -375,59 +459,9 @@ function parsePartsCsv(csvText) {
   const histColumnsPresent = normalizedHeader.some((value) => /^hist(?:[0-9]+|(?:[-_][a-z0-9]+)*)$/.test(value));
 
   const requiredSourceAliases = {
-    part_number: ["part_number", "part-no", "part_no"],
-    on_hand: ["on_hand", "qoh", "tqty", "tot-stk-qty", "qty_on_hand", "qty-on-hand"],
-    monthly_demand_avg: [
-      "monthly_demand_avg",
-      "monthly-demand-avg",
-      "monthly demand avg",
-      "avg-sls",
-      "avg_sls",
-      "avg-sls-12m",
-      "avg_sls_12m",
-      "avg-sls-12mo",
-      "avg_sls_12mo",
-      "avg-sls-12month",
-      "avg_sls_12month",
-      "avg-sls-annual",
-      "avg_sls_annual",
-      "avg_sls_annualized",
-      "hist",
-      "hist-sum",
-      "hist_sum",
-      "hist-total",
-      "hist_total",
-      "hist-year",
-      "hist_year",
-      "avg_12m",
-      "avg_12_month",
-      "demand",
-    ],
-    last_sale_days: [
-      "last_sale_days",
-      "last-sale-days",
-      "last sale days",
-      "last-sale",
-      "last-sale-date",
-      "last_sale_date",
-      "last sale date",
-      "last-sale-dt",
-      "last_sale_dt",
-      "last-sales-date",
-      "last_sls_date",
-      "last-sls-date",
-      "last_sls_days",
-      "days-since-last-sale",
-      "days_since_last_sale",
-      "days-since-last-sold",
-      "days_since_last_sold",
-      "days_since_last_sale_days",
-      "age-dr",
-      "age_dr",
-      "age",
-      "last_sale",
-    ],
-    unit_cost: ["unit_cost", "unit-cost", "base-cost", "base_cost"],
+    part_number: ["part_number", "part-no", "part_no", "part-no-new"],
+    on_hand: ["on_hand", "qoh", "ooh", "tqty", "tot-stk-qty", "qty_on_hand", "qty-on-hand", "onhand"],
+    unit_cost: ["unit_cost", "unit-cost", "base-cost", "base_cost", "base-cos", "base_cos"],
   };
 
   const missingColumns = Object.entries(requiredSourceAliases)
@@ -463,6 +497,14 @@ function parsePartsCsv(csvText) {
     if (monthlyDemand === null) {
       monthlyDemand = getMonthlyDemandFromHist(row);
     }
+    if (monthlyDemand === null) {
+      monthlyDemand = inferMonthlyDemand(row);
+    }
+    if (monthlyDemand === null) {
+      monthlyDemand = "0";
+    } else if (parseNumericValue(monthlyDemand) === null) {
+      monthlyDemand = "0";
+    }
 
     let lastSaleDays = resolveLastSaleDays(row);
 
@@ -481,9 +523,6 @@ function parsePartsCsv(csvText) {
     }
     if (onHand === null) {
       missingFields.push("on_hand");
-    }
-    if (monthlyDemand === null) {
-      missingFields.push("monthly_demand_avg");
     }
     if (unitCost === null) {
       missingFields.push("unit_cost");
@@ -536,6 +575,7 @@ function renderRecommendations(recommendations) {
         <td>${pct((r.confidence_score || 0) * 100)}</td>
         <td>${pct(r.obsolescence_risk * 100)}</td>
         <td>${pct(r.stockout_risk * 100)}</td>
+        <td>${pct(r.fill_rate_pct || ((1 - (r.stockout_risk || 0)) * 100))}</td>
         <td>${r.current_turns.toFixed(2)}</td>
         <td>${r.projected_turns.toFixed(2)}</td>
         <td>${r.recommended_order_qty.toFixed(1)}</td>
@@ -782,6 +822,7 @@ function recommendForPartLocal(part, constraints) {
     projected_turns: Number(projectedTurns.toFixed(2)),
     obsolescence_risk: Number(obRisk.toFixed(2)),
     stockout_risk: Number(soRisk.toFixed(2)),
+    fill_rate_pct: Number(((1 - soRisk) * 100).toFixed(2)),
     recommended_action: action,
     recommended_order_qty: Number(orderQty.toFixed(1)),
     confidence_score: Number(confidence.toFixed(2)),
@@ -1125,10 +1166,11 @@ async function exportPlanCsv() {
     return;
   }
 
+  const exportFilter = exportActionFilterEl?.value || "all";
   const response = await fetch("/api/plan/export-csv", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    body: JSON.stringify({ ...payload, action_filter: exportFilter }),
   });
 
   if (!response.ok) {
@@ -1137,7 +1179,7 @@ async function exportPlanCsv() {
   }
 
   const blob = await response.blob();
-  downloadBlob(blob, "partspilot_plan.csv");
+  downloadBlob(blob, `partspilot_plan_${exportFilter}.csv`);
 }
 
 loadDemoButton.addEventListener("click", loadDemo);
